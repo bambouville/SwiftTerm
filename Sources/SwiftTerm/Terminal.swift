@@ -4645,22 +4645,43 @@ open class Terminal {
     //
     func cmdScrollDown (_ pars: [Int])
     {
-        let p = min (max (pars.count == 0 ? 1 : pars [0], 1), rows)
+        let requested = min (max (pars.count == 0 ? 1 : pars [0], 1), rows)
         let da = CharData.defaultAttr
 
-        let row = buffer.scrollTop + buffer.yBase
+        if marginMode {
+            let row = buffer.scrollTop + buffer.yBase
 
-        let columnCount = buffer.marginRight-buffer.marginLeft+1
-        let rowCount = buffer.scrollBottom-buffer.scrollTop
-        for _ in 0..<p {
-            for i in (0..<rowCount).reversed() {
-                let src = buffer.lines [row+i]
-                let dst = buffer.lines [row+i+1]
-                
-                dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
+            let columnCount = buffer.marginRight-buffer.marginLeft+1
+            let rowCount = buffer.scrollBottom-buffer.scrollTop
+            let p = min (requested, rowCount + 1)
+            for _ in 0..<p {
+                for i in (0..<rowCount).reversed() {
+                    let src = buffer.lines [row+i]
+                    let dst = buffer.lines [row+i+1]
+
+                    dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
+                }
+                let last = buffer.lines [row]
+                last.fill (with: CharData (attribute: da), atCol: buffer.marginLeft, len: columnCount)
             }
-            let last = buffer.lines [row]
-            last.fill (with: CharData (attribute: da), atCol: buffer.marginLeft, len: columnCount)
+        } else {
+            let topRow = buffer.yBase + buffer.scrollTop
+            let bottomRow = buffer.yBase + buffer.scrollBottom
+            let scrollRegionHeight = bottomRow - topRow + 1
+            let p = min (requested, scrollRegionHeight)
+
+            if p >= scrollRegionHeight {
+                for line in topRow...bottomRow {
+                    buffer.lines [line] = buffer.getBlankLine (attribute: da)
+                    updateRange (line)
+                }
+            } else {
+                _ = buffer.lines.shiftElements (start: topRow, count: scrollRegionHeight - p, offset: p)
+                for line in topRow..<(topRow + p) {
+                    buffer.lines [line] = buffer.getBlankLine (attribute: da)
+                    updateRange (line)
+                }
+            }
         }
         // this.maxRange();
         updateRange (startLine: buffer.scrollTop, endLine: buffer.scrollBottom)

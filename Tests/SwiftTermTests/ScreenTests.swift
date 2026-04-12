@@ -399,6 +399,21 @@ final class ScreenTests {
         TerminalTestHarness.assertLineText(terminal.buffer, row: 4, equals: "line3")
     }
 
+    /// Test scroll down within a bounded full-width scroll region.
+    @Test func testScrollDownWithinScrollRegion() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 5, rows: 5, scrollback: 0)
+        terminal.feed(text: "line1\r\nline2\r\nline3\r\nline4\r\nline5")
+
+        terminal.feed(text: "\(esc)[2;4r")
+        terminal.feed(text: "\(esc)[2T")
+
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 0, equals: "line1")
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 1, equals: "")
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 2, equals: "")
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 3, equals: "line2")
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 4, equals: "line5")
+    }
+
     /// Test cursor movement: CUU (up), CUD (down), CUF (forward), CUB (back)
     @Test func testCursorMovement() {
         let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 10, scrollback: 0)
