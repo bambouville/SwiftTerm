@@ -349,7 +349,7 @@ open class Terminal {
     // Whether the terminal is operating in application cursor mode
     public var applicationCursor : Bool = false
 
-    private struct KeyboardModeState {
+    fileprivate struct KeyboardModeState {
         var flags: KittyKeyboardFlags = []
         var stack: [KittyKeyboardFlags] = []
     }
@@ -361,6 +361,37 @@ open class Terminal {
     public var keyboardEnhancementFlags: KittyKeyboardFlags {
         let mode = isCurrentBufferAlternate ? keyboardModeAlt : keyboardModeNormal
         return mode.flags
+    }
+
+    /// Captures the normal and alternate-screen kitty keyboard mode state for
+    /// host apps that multiplex one `Terminal` across multiple `tmux -CC`
+    /// windows, so kitty flags pushed in one window do not leak into another.
+    ///
+    /// This only reads keyboard mode state and does not emit bytes or touch any
+    /// other terminal state.
+    public func keyboardModeSnapshot() -> KittyKeyboardModeSnapshot {
+        return KittyKeyboardModeSnapshot(normal: keyboardModeNormal, alternate: keyboardModeAlt)
+    }
+
+    /// Restores both normal and alternate-screen kitty keyboard mode state for
+    /// host apps that multiplex one `Terminal` across multiple `tmux -CC`
+    /// windows, so kitty flags pushed in one window do not leak into another.
+    ///
+    /// This replaces both buffers' keyboard mode state and does not emit bytes
+    /// or touch any other terminal state.
+    public func restoreKeyboardMode(_ snapshot: KittyKeyboardModeSnapshot) {
+        keyboardModeNormal = snapshot.normal
+        keyboardModeAlt = snapshot.alternate
+    }
+
+    /// Clears both normal and alternate-screen kitty keyboard mode state for
+    /// host apps that multiplex one `Terminal` across multiple `tmux -CC`
+    /// windows, so kitty flags pushed in one window do not leak into another.
+    ///
+    /// This does not emit bytes or touch any other terminal state.
+    public func resetKeyboardMode() {
+        keyboardModeNormal = KeyboardModeState()
+        keyboardModeAlt = KeyboardModeState()
     }
     
     // You can ignore most of the defaults set here, the function
@@ -6649,6 +6680,35 @@ open class Terminal {
     func translateBufferLineToString (buffer: Buffer, line: Int, start: Int, end: Int) -> String
     {
         buffer.translateBufferLineToString(lineIndex: line, trimRight: true, startCol: start, endCol: end, skipNullCellsFollowingWide: true, characterProvider: { self.getCharacter(for: $0) }).replacingOccurrences(of: "\u{0}", with: " ")
+    }
+}
+
+/// Opaque snapshot of kitty keyboard mode state for host apps that multiplex
+/// one `Terminal` across multiple `tmux -CC` windows, so kitty flags pushed in
+/// one window do not leak into another.
+public struct KittyKeyboardModeSnapshot {
+    fileprivate var normal: Terminal.KeyboardModeState
+    fileprivate var alternate: Terminal.KeyboardModeState
+
+    fileprivate init(normal: Terminal.KeyboardModeState, alternate: Terminal.KeyboardModeState) {
+        self.normal = normal
+        self.alternate = alternate
+    }
+
+    /// True when both normal and alternate-screen kitty keyboard mode state are
+    /// empty, for host apps that multiplex one `Terminal` across multiple
+    /// `tmux -CC` windows and need to know whether any window-local kitty flags
+    /// remain saved.
+    public var isEmpty: Bool {
+        return normal.flags == [] && normal.stack.isEmpty && alternate.flags == [] && alternate.stack.isEmpty
+    }
+
+    /// Returns a copy with alternate-screen kitty keyboard mode state cleared,
+    /// for host apps that multiplex one `Terminal` across multiple `tmux -CC`
+    /// windows and need to discard window-local alternate-screen kitty flags
+    /// without changing normal-screen state.
+    public func clearingAlternateScreenState() -> KittyKeyboardModeSnapshot {
+        return KittyKeyboardModeSnapshot(normal: normal, alternate: Terminal.KeyboardModeState())
     }
 }
 

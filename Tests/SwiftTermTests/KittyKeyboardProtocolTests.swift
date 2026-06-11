@@ -188,4 +188,52 @@ final class KittyKeyboardProtocolTests {
         terminal.feed(text: "\(esc)[<16u")
         #expect(terminal.keyboardEnhancementFlags == [.reportAlternates])
     }
+
+    @Test func testResetKeyboardModeClearsFlags() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 20, rows: 10)
+
+        terminal.feed(text: "\(esc)[>1u")
+        #expect(!terminal.keyboardEnhancementFlags.isEmpty)
+
+        terminal.resetKeyboardMode()
+        #expect(terminal.keyboardEnhancementFlags.isEmpty)
+    }
+
+    @Test func testKeyboardModeSnapshotRoundTripsStack() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 20, rows: 10)
+
+        terminal.feed(text: "\(esc)[>1u")
+        terminal.feed(text: "\(esc)[>2u")
+
+        let snapshot = terminal.keyboardModeSnapshot()
+        terminal.resetKeyboardMode()
+        terminal.restoreKeyboardMode(snapshot)
+
+        #expect(terminal.keyboardEnhancementFlags == KittyKeyboardFlags(rawValue: 2))
+
+        terminal.feed(text: "\(esc)[<u")
+        #expect(terminal.keyboardEnhancementFlags == KittyKeyboardFlags(rawValue: 1))
+    }
+
+    @Test func testKeyboardModeSnapshotCanClearAlternateScreenState() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 20, rows: 10)
+
+        terminal.feed(text: "\(esc)[?1049h")
+        terminal.feed(text: "\(esc)[>1u")
+
+        let snapshot = terminal.keyboardModeSnapshot()
+        let clearedSnapshot = snapshot.clearingAlternateScreenState()
+        terminal.restoreKeyboardMode(clearedSnapshot)
+
+        #expect(terminal.keyboardEnhancementFlags.isEmpty)
+    }
+
+    @Test func testKeyboardModeSnapshotIsEmpty() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 20, rows: 10)
+
+        #expect(terminal.keyboardModeSnapshot().isEmpty)
+
+        terminal.feed(text: "\(esc)[>1u")
+        #expect(!terminal.keyboardModeSnapshot().isEmpty)
+    }
 }
