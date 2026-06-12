@@ -93,4 +93,46 @@ final class HistoryTests {
         terminal.changeHistorySize(nil)
         #expect(terminal.buffer.lines.maxLength == 25) // 25 rows only
     }
+
+    /// A cursor saved with DECSC must survive a history-size toggle: savedY
+    /// is viewport-relative and the kept viewport rows do not move relative
+    /// to the screen when scrollback history is trimmed.
+    @Test func testHistorySizeChangePreservesSavedCursor() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 5, scrollback: 100)
+        for i in 0..<20 {
+            terminal.feed(text: "line\(i)\r\n")
+        }
+        #expect(terminal.buffer.yBase > 0)
+
+        terminal.feed(text: "\u{1b}[4;2H") // cursor to row 3, col 1 (0-based)
+        terminal.feed(text: "\u{1b}7")     // DECSC
+        #expect(terminal.buffer.savedY == 3)
+
+        terminal.changeScrollback(0)
+        terminal.changeScrollback(100)
+
+        terminal.feed(text: "\u{1b}8")     // DECRC
+        #expect(terminal.buffer.y == 3)
+        #expect(terminal.buffer.x == 1)
+    }
+
+    /// Same property through the alt-screen path: ?1049h saves the normal
+    /// buffer cursor, a scrollback toggle while the alt screen is active must
+    /// not corrupt it, and ?1049l restores it to the saved row.
+    @Test func testHistorySizeChangePreservesAltScreenSavedCursor() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 5, scrollback: 100)
+        for i in 0..<20 {
+            terminal.feed(text: "line\(i)\r\n")
+        }
+
+        terminal.feed(text: "\u{1b}[4;2H")    // cursor to row 3, col 1 (0-based)
+        terminal.feed(text: "\u{1b}[?1049h")  // save cursor, enter alt screen
+
+        terminal.changeScrollback(0)
+        terminal.changeScrollback(100)
+
+        terminal.feed(text: "\u{1b}[?1049l")  // leave alt screen, restore cursor
+        #expect(terminal.buffer.y == 3)
+        #expect(terminal.buffer.x == 1)
+    }
 }

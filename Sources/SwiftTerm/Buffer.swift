@@ -542,7 +542,10 @@ public final class Buffer {
                     lines.trimStart(count: amountToTrim)
                     yBase = max(yBase - amountToTrim, 0)
                     yDisp = max(yDisp - amountToTrim, 0)
-                    savedY = max(savedY - amountToTrim, 0)
+                    // savedY is viewport-relative (DECSC saves buffer.y and
+                    // DECRC clamps to rows-1); trimming history rebases the
+                    // absolute indices above, but the kept viewport rows do
+                    // not move relative to the screen, so savedY stays.
                 }
                 lines.maxLength = newMaxLength
             }
