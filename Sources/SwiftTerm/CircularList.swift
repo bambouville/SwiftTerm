@@ -160,9 +160,14 @@ class CircularList<T> {
 
     func trimStart (count: Int)
     {
+        guard count > 0 else {
+            return
+        }
+        // Clamp so over-trimming empties the list instead of driving the
+        // internal count negative (the count setter only bounds the top).
         let c = count > self.count ? self.count : count
         startIndex = startIndex + c
-        self.count -= count
+        self.count -= c
     }
 
     func shiftElements (start: Int, count: Int, offset: Int) -> Bool
@@ -382,9 +387,14 @@ internal class CircularBufferLineList {
 
     func trimStart (count: Int)
     {
+        guard count > 0 else {
+            return
+        }
+        // Clamp so over-trimming empties the list instead of driving the
+        // internal count negative (the count setter only bounds the top).
         let c = count > self.count ? self.count : count
         startIndex = startIndex + c
-        self.count -= count
+        self.count -= c
     }
 
     func shiftElements (start: Int, count: Int, offset: Int) -> Bool
