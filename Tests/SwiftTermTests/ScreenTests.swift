@@ -248,6 +248,41 @@ final class ScreenTests {
         TerminalTestHarness.assertLineText(terminal.buffer, row: 2, equals: "5")
     }
 
+    /// Test ED 3 marks the screen dirty and emits scrolled so front-ends
+    /// resync scroll geometry to the trimmed buffer (a stale contentOffset
+    /// past the end of the shrunken buffer renders as a black screen on iOS).
+    @Test func testEraseScrollbackNotifiesScrolled() {
+        let (terminal, delegate) = TerminalTestHarness.makeTerminal(cols: 5, rows: 2, scrollback: 10)
+        terminal.feed(text: "1\r\n2\r\n3\r\n4\r\n5")
+
+        #expect(terminal.buffer.lines.count == 5)
+        #expect(terminal.buffer.yBase == 3)
+        #expect(terminal.buffer.yDisp == 3)
+
+        terminal.clearUpdateRange()
+        let scrolledBefore = delegate.scrolledYDisps.count
+        terminal.feed(text: "\(esc)[3J")
+
+        // Scrollback trimmed, viewport indices rebased to the buffer top
+        #expect(terminal.buffer.lines.count == 2)
+        #expect(terminal.buffer.yBase == 0)
+        #expect(terminal.buffer.yDisp == 0)
+
+        // The scrolled event carries the rebased yDisp
+        #expect(delegate.scrolledYDisps.count == scrolledBefore + 1)
+        #expect(delegate.scrolledYDisps.last == 0)
+
+        // The full screen is marked for redraw
+        let range = terminal.getUpdateRange()
+        #expect(range != nil)
+        #expect(range?.startY == 0)
+        #expect(range?.endY == terminal.rows - 1)
+
+        // Viewport content survives the trim
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 0, equals: "4")
+        TerminalTestHarness.assertLineText(terminal.buffer, row: 1, equals: "5")
+    }
+
     /// Test EL 0 - Erase from cursor to end of line
     @Test func testEraseLineFromCursor() {
         let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 1, scrollback: 0)

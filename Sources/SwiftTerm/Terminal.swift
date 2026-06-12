@@ -2400,6 +2400,13 @@ open class Terminal {
                 buffer.linesTop = 0
                 buffer.yBase = max (buffer.yBase - scrollBackSize, 0)
                 buffer.yDisp = max (buffer.yDisp - scrollBackSize, 0)
+                // The viewport rows kept their content, but every backing
+                // index changed and yDisp moved: mark the screen dirty and
+                // emit scrolled so front-ends resync scroll geometry to the
+                // shrunken buffer (on iOS the scroll view otherwise keeps a
+                // contentOffset past the end of the buffer).
+                updateRange (startLine: 0, endLine: rows - 1)
+                tdel?.scrolled (source: self, yDisp: buffer.yDisp)
             }
             break;
         default:
