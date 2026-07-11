@@ -550,27 +550,70 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
     
+    /// Extra items appended whenever the terminal presents its edit/
+    /// context menu. The actions resolve through the responder chain,
+    /// so hosts typically implement them on an ancestor view (this
+    /// view's own `canPerformAction` returns false for them and UIKit
+    /// keeps walking). Assign once; included on every presentation.
+    public var additionalMenuItems: [UIMenuItem] = []
+
+    /// Backing store for the iOS 16+ edit-menu interaction. Typed `Any`
+    /// so the stored property needs no availability gate.
+    private var _editMenuInteraction: Any? = nil
+
     /// Shows the context menu for the terminal, the arguments play a key role:
     /// - Parameters:
     ///  - region: This is the location that we want to avoid having the menu being shown
     ///  - pos: the location where this was triggered in the buffer, it used at a later point
     ///  to auto-select a word
     func showContextMenu (forRegion: CGRect, pos: Position) {
-        var items: [UIMenuItem] = []
-        
         lastLongSelect = pos
         lastLongSelectRegion = forRegion
 
-        //GAR: Declutter context menu
-        //items.append (UIMenuItem(title: "Reset", action: #selector(resetCmd)))
-        
-        // Configure the shared menu controller
-        let menuController = UIMenuController.shared
-        menuController.menuItems = items
-        
-        // Set the location of the menu in the view.
-        //let menuLocation = CGRect (origin: at, size: CGSize (width: cellDimension.width, height: cellDimension.height))
-        menuController.showMenu(from: self, rect: forRegion)
+        if #available(iOS 16.0, *) {
+            // Linked against the iOS 17+ SDK, UIMenuController.showMenu is
+            // a hard no-op — the menu only presents through
+            // UIEditMenuInteraction on modern systems.
+            let interaction: UIEditMenuInteraction
+            if let existing = _editMenuInteraction as? UIEditMenuInteraction {
+                interaction = existing
+            } else {
+                interaction = UIEditMenuInteraction(delegate: self)
+                addInteraction(interaction)
+                _editMenuInteraction = interaction
+            }
+            let configuration = UIEditMenuConfiguration(
+                identifier: "SwiftTermSelectionMenu",
+                sourcePoint: CGPoint(x: forRegion.midX, y: forRegion.minY))
+            interaction.presentEditMenu(with: configuration)
+        } else {
+            let menuController = UIMenuController.shared
+            menuController.menuItems = additionalMenuItems
+            menuController.showMenu(from: self, rect: forRegion)
+        }
+    }
+
+    /// Tracked via the interaction delegate callbacks below —
+    /// UIEditMenuInteraction has no public "is presented" query.
+    private var _editMenuVisible = false
+
+    /// Whether the terminal's edit/context menu is currently shown,
+    /// regardless of backend.
+    var terminalMenuVisible: Bool {
+        if #available(iOS 16.0, *), _editMenuInteraction != nil {
+            return _editMenuVisible
+        }
+        return UIMenuController.shared.isMenuVisible
+    }
+
+    /// Dismisses whichever menu backend is active.
+    func hideTerminalMenu () {
+        if #available(iOS 16.0, *),
+           let interaction = _editMenuInteraction as? UIEditMenuInteraction {
+            interaction.dismissMenu()
+        } else if UIMenuController.shared.isMenuVisible {
+            UIMenuController.shared.hideMenu()
+        }
     }
     
     // This is a position relative to the buffer
@@ -597,10 +640,16 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
          if gestureRecognizer.state == .began {
              let _ = self.becomeFirstResponder()
              let tapLocation = gestureRecognizer.location(in: gestureRecognizer.view)
-             let tapRegion = makeContextMenuRegionForTap (point: tapLocation)
-             
-             showContextMenu (forRegion: tapRegion,
-                              pos: calculateTapHit (gesture: gestureRecognizer).grid)
+             lastLongSelectRegion = makeContextMenuRegionForTap (point: tapLocation)
+             lastLongSelect = calculateTapHit (gesture: gestureRecognizer).grid
+          } else if gestureRecognizer.state == .ended {
+             // Present on lift, not on .began: UIEditMenuInteraction (unlike
+             // the defunct UIMenuController) tracks live touches, and the
+             // long-press touch-up transition dismisses a menu that was
+             // presented while the finger was still down.
+             if let pos = lastLongSelect {
+                 showContextMenu (forRegion: lastLongSelectRegion, pos: pos)
+             }
           }
     }
     
@@ -716,8 +765,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                     selection.selectNone()
                     disableSelectionPanGesture()
                 }
-                if UIMenuController.shared.isMenuVisible {
-                    UIMenuController.shared.hideMenu()
+                if terminalMenuVisible {
+                    hideTerminalMenu()
                 } else {
                     let location = gestureRecognizer.location(in: gestureRecognizer.view)
                     let tapLoc = calculateTapHit(gesture: gestureRecognizer).grid
@@ -2579,7 +2628,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 #endif
             
             if !self.selection.active {
-                UIMenuController.shared.hideMenu()
+                self.hideTerminalMenu()
                 self.selection.selectNone()
                 self.disableSelectionPanGesture()
             }
@@ -2679,3 +2728,38 @@ extension TerminalViewDelegate {
 #endif
 
 #endif
+
+@available(iOS 16.0, *)
+extension TerminalView: UIEditMenuInteractionDelegate {
+    public func editMenuInteraction (
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        // Standard actions (copy/paste/select…) arrive pre-validated
+        // against the responder chain; host-supplied items ride along
+        // as UICommands, which UIKit validates and dispatches through
+        // the same chain (hosts implement them on an ancestor view).
+        let extras: [UIMenuElement] = additionalMenuItems.map {
+            UICommand(title: $0.title, action: $0.action)
+        }
+        return UIMenu(children: suggestedActions + extras)
+    }
+
+    public func editMenuInteraction (
+        _ interaction: UIEditMenuInteraction,
+        willPresentMenuFor configuration: UIEditMenuConfiguration,
+        animator: UIEditMenuInteractionAnimating
+    ) {
+        _editMenuVisible = true
+    }
+
+
+    public func editMenuInteraction (
+        _ interaction: UIEditMenuInteraction,
+        willDismissMenuFor configuration: UIEditMenuConfiguration,
+        animator: UIEditMenuInteractionAnimating
+    ) {
+        _editMenuVisible = false
+    }
+}
