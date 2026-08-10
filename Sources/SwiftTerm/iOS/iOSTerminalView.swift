@@ -2727,8 +2727,6 @@ extension TerminalViewDelegate {
 }
 #endif
 
-#endif
-
 @available(iOS 16.0, *)
 extension TerminalView: UIEditMenuInteractionDelegate {
     public func editMenuInteraction (
@@ -2763,3 +2761,5 @@ extension TerminalView: UIEditMenuInteractionDelegate {
         _editMenuVisible = false
     }
 }
+
+#endif

@@ -10,6 +10,14 @@ import Testing
 import os
 @testable import SwiftTerm
 
+private final class WeakTerminalReference {
+    weak var value: Terminal?
+
+    init(_ value: Terminal) {
+        self.value = value
+    }
+}
+
 final class PerformaceTests {
     let signposter = OSSignposter(subsystem: "SwiftTerm", category: .pointsOfInterest)
 
@@ -103,6 +111,103 @@ final class PerformaceTests {
             duration: Duration(secondsComponent: 10, attosecondsComponent: 0))
     }
 
+    /// Release audit oracle for resize work that should scale with the
+    /// materialized buffer, not the configured scrollback capacity. Configure
+    /// with SWIFTTERM_PERF_SCROLLBACK, SWIFTTERM_PERF_POPULATED_LINES, and
+    /// SWIFTTERM_PERF_ITERATIONS. It also proves that repeated width changes
+    /// preserve visible content and cursor state.
+    @Test func measureResizeAgainstScrollbackCapacity() {
+        let environment = ProcessInfo.processInfo.environment
+        let scrollback = Int(environment["SWIFTTERM_PERF_SCROLLBACK"] ?? "50000") ?? 50_000
+        let populatedLines = Int(environment["SWIFTTERM_PERF_POPULATED_LINES"] ?? "0") ?? 0
+        let iterations = max(
+            1,
+            Int(environment["SWIFTTERM_PERF_ITERATIONS"] ?? "30") ?? 30
+        )
+        let (terminal, _) = TerminalTestHarness.makeTerminal(
+            cols: 80,
+            rows: 24,
+            scrollback: scrollback
+        )
+
+        if populatedLines > 0 {
+            let row = Array("benchmark-row\r\n".utf8)
+            for _ in 0..<populatedLines {
+                terminal.feed(byteArray: row)
+            }
+        } else {
+            terminal.feed(text: "top\r\nmiddle\r\nbottom")
+        }
+
+        let expectedLines = TerminalTestHarness.visibleLinesText(buffer: terminal.buffer, terminal: terminal)
+        let expectedCursor = TerminalTestHarness.cursorPosition(buffer: terminal.buffer)
+        let expectedCount = terminal.buffer.lines.count
+
+        let coldStart = DispatchTime.now().uptimeNanoseconds
+        terminal.resize(cols: 81, rows: 24)
+        terminal.resize(cols: 80, rows: 24)
+        let coldNanoseconds = DispatchTime.now().uptimeNanoseconds - coldStart
+
+        var samples: [UInt64] = []
+        samples.reserveCapacity(iterations)
+        for _ in 0..<iterations {
+            let start = DispatchTime.now().uptimeNanoseconds
+            terminal.resize(cols: 81, rows: 24)
+            terminal.resize(cols: 80, rows: 24)
+            samples.append(DispatchTime.now().uptimeNanoseconds - start)
+        }
+
+        samples.sort()
+        let percentile: (Double) -> Double = { fraction in
+            let rank = Int(ceil(fraction * Double(samples.count)))
+            let index = min(samples.count - 1, max(0, rank - 1))
+            return Double(samples[index]) / 1_000_000
+        }
+        let visibleLines = TerminalTestHarness.visibleLinesText(buffer: terminal.buffer, terminal: terminal)
+        let cursor = TerminalTestHarness.cursorPosition(buffer: terminal.buffer)
+        #expect(visibleLines == expectedLines)
+        #expect(cursor == expectedCursor)
+        #expect(terminal.buffer.lines.count == expectedCount)
+        #expect(terminal.getDims().cols == 80)
+        #expect(terminal.getDims().rows == 24)
+
+        print(
+            "resize-capacity scrollback=\(scrollback) populated=\(populatedLines) "
+                + "materialized=\(expectedCount) iterations=\(iterations) "
+                + "coldMs=\(Double(coldNanoseconds) / 1_000_000) "
+                + "p50Ms=\(percentile(0.50)) p95Ms=\(percentile(0.95)) "
+                + "maxMs=\(percentile(1.00))"
+        )
+    }
+
+    /// Counts terminals retained after reset. A non-zero result demonstrates
+    /// persistent heap growth, not timing noise, because the only strong local
+    /// reference leaves scope inside each autorelease pool.
+    @Test func measureResetRetention() {
+        let environment = ProcessInfo.processInfo.environment
+        let terminalCount = Int(environment["SWIFTTERM_PERF_TERMINALS"] ?? "100") ?? 100
+        let scrollback = Int(environment["SWIFTTERM_PERF_SCROLLBACK"] ?? "50000") ?? 50_000
+        var references: [WeakTerminalReference] = []
+        references.reserveCapacity(terminalCount)
+
+        for _ in 0..<terminalCount {
+            autoreleasepool {
+                let (terminal, _) = TerminalTestHarness.makeTerminal(
+                    cols: 80,
+                    rows: 24,
+                    scrollback: scrollback
+                )
+                terminal.resetToInitialState()
+                references.append(WeakTerminalReference(terminal))
+            }
+        }
+
+        let retained = references.lazy.filter { $0.value != nil }.count
+        print(
+            "reset-retention terminals=\(terminalCount) scrollback=\(scrollback) "
+                + "retained=\(retained) released=\(terminalCount - retained)"
+        )
+    }
+
 }
 #endif
-
