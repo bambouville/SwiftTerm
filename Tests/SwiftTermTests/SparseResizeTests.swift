@@ -12,7 +12,9 @@ final class SparseResizeTests {
             scrollback: 32
         )
 
-        for row in 0..<24 {
+        // Fill and rotate the complete ring so ED3 leaves materialized lines
+        // immediately beyond the new logical end.
+        for row in 0..<80 {
             terminal.feed(text: "row-\(row)\r\n")
         }
 
@@ -20,15 +22,13 @@ final class SparseResizeTests {
         terminal.feed(text: "\(esc)[3J")
         #expect(terminal.buffer.lines.count == terminal.rows)
 
-        let materializedBeforeResize = terminal.buffer.lines.getArray().compactMap { $0 }
-        #expect(materializedBeforeResize.count > terminal.buffer.lines.count)
-        #expect(materializedBeforeResize.allSatisfy { $0.count == 80 })
+        let firstOverflowIndex = terminal.buffer.lines.count
+        let overflowBeforeResize = terminal.buffer.lines.materializedLine(at: firstOverflowIndex)
+        #expect(overflowBeforeResize?.count == 80)
 
         terminal.resize(cols: 120, rows: 4)
 
-        let materializedAfterResize = terminal.buffer.lines.getArray().compactMap { $0 }
-        #expect(materializedAfterResize.count == materializedBeforeResize.count)
-        #expect(materializedAfterResize.allSatisfy { $0.count == 120 })
+        #expect(terminal.buffer.lines.materializedLine(at: firstOverflowIndex)?.count == 120)
     }
 
     @Test func marginLineOperationsAreSafeAfterClearScrollbackAndGrow() {
@@ -38,7 +38,7 @@ final class SparseResizeTests {
             scrollback: 32
         )
 
-        for row in 0..<24 {
+        for row in 0..<80 {
             terminal.feed(text: "row-\(row)\r\n")
         }
         terminal.feed(text: "\(esc)[3J")
@@ -52,8 +52,14 @@ final class SparseResizeTests {
 
         #expect(terminal.getDims().cols == 120)
         #expect(terminal.getDims().rows == 4)
-        #expect(
-            terminal.buffer.lines.getArray().compactMap { $0 }.allSatisfy { $0.count == 120 }
+        let reachableLineCount = min(
+            terminal.buffer.lines.maxLength,
+            terminal.buffer.lines.count + terminal.rows
         )
+        for index in 0..<reachableLineCount {
+            if let line = terminal.buffer.lines.materializedLine(at: index) {
+                #expect(line.count == 120)
+            }
+        }
     }
 }

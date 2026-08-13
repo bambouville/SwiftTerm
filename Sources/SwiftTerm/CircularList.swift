@@ -246,6 +246,15 @@ internal class CircularBufferLineList {
         array
     }
 
+    /// Returns an already-materialized line at a logical ring index without
+    /// allocating a blank line for an empty slot.
+    func materializedLine(at index: Int) -> BufferLine? {
+        guard index >= 0 && index < maxLength else {
+            return nil
+        }
+        return array[getCyclicIndex(index)]
+    }
+
     public func getStartIndex() -> Int {
         startIndex
     }

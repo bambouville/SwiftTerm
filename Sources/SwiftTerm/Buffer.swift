@@ -421,8 +421,13 @@ public final class Buffer {
             // Deal with columns increasing (reducing needs to happen after reflow)
             
             if cols < newCols {
-                for case let line? in lines.getArray() {
-                    line.resize (cols: newCols, fillData: CharData.Null)
+                // Margin-mode IL/DL can address up to one viewport beyond the
+                // logical count. Resize only materialized lines in that reachable
+                // range; indexing every maxLength slot would allocate the entire
+                // scrollback buffer.
+                let reachableLineCount = min(lines.maxLength, lines.count + newRows)
+                for index in 0..<reachableLineCount {
+                    lines.materializedLine(at: index)?.resize(cols: newCols, fillData: CharData.Null)
                 }
 
             }
@@ -503,15 +508,26 @@ public final class Buffer {
             reflow (newCols, newRows)
             // Trim the end of the line off if cols shrunk
             if cols > newCols {
-                for case let line? in lines.getArray() {
-                    line.resize (cols: newCols, fillData: CharData.Null)
+                let reachableLineCount = min(lines.maxLength, lines.count + newRows)
+                for index in 0..<reachableLineCount {
+                    lines.materializedLine(at: index)?.resize(cols: newCols, fillData: CharData.Null)
+                }
+            } else if cols < newCols {
+                // Reflow can rearrange the ring. Recheck only the overflow fringe;
+                // active lines were resized above or created at the new width.
+                let reachableLineCount = min(lines.maxLength, lines.count + newRows)
+                if lines.count < reachableLineCount {
+                    for index in lines.count..<reachableLineCount {
+                        lines.materializedLine(at: index)?.resize(cols: newCols, fillData: CharData.Null)
+                    }
                 }
             }
         }
         
         // DEBUG: Post-condition
         if lines.count > 0 {
-            for case let line? in lines.getArray() {
+            for index in 0..<lines.count {
+                let line = lines[index]
                 if line.count < newCols {
                     print ("stop here newCols=\(newCols) but the element has: \(line.count)")
                     abort ()
