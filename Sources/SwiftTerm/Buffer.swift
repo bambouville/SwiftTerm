@@ -254,6 +254,11 @@ public final class Buffer {
     private var insertMode: Bool = false
     private var marginMode: Bool = false
     private var wraparound: Bool = false
+    /// Invoked with the number of rows dropped from the top of `lines`
+    /// by a history resize; the owning terminal forwards it to its
+    /// delegate as `linesTrimmed` so front-end row anchors stay valid.
+    var linesTrimmed: ((Int) -> ())?
+
     var scroll: (_ isWrapped: Bool)->() = { x in
         fatalError("This should be set after creating a buffer")
     }
@@ -475,6 +480,7 @@ public final class Buffer {
                 let amountToTrim = lines.count - newMaxLength
                 if amountToTrim > 0 {
                     lines.trimStart(count: amountToTrim)
+                    linesTrimmed?(amountToTrim)
                     yBase = max (yBase - amountToTrim, 0)
                     yDisp = max (yDisp - amountToTrim, 0)
                     savedY = max (savedY - amountToTrim, 0)
@@ -555,6 +561,7 @@ public final class Buffer {
                 let amountToTrim = lines.count - newMaxLength
                 if amountToTrim > 0 {
                     lines.trimStart(count: amountToTrim)
+                    linesTrimmed?(amountToTrim)
                     yBase = max(yBase - amountToTrim, 0)
                     yDisp = max(yDisp - amountToTrim, 0)
                     // savedY is viewport-relative (DECSC saves buffer.y and

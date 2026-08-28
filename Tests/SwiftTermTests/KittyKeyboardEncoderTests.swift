@@ -177,7 +177,12 @@ final class KittyKeyboardEncoderTests: XCTestCase {
                      expected: "\u{1b}[97:65:99;2u")
     }
 
-    func testShiftAOnUsKeyboardWithReportAlternates() {
+    // Shift-only text keys are sent as their text even when the app asked
+    // for alternate keys: kitty only decorates escape-coded events with
+    // alternates, and never escape-codes a text key unless "report all
+    // keys as escape codes" is on. Claude Code (flags 5) and Codex (flags 7)
+    // both rely on receiving "+" for shift+= here.
+    func testShiftAOnUsKeyboardWithReportAlternatesSendsText() {
         assertEncode(KittyKeyEvent(key: .unicode(97),
                                    modifiers: [.shift],
                                    eventType: .press,
@@ -185,10 +190,35 @@ final class KittyKeyboardEncoderTests: XCTestCase {
                                    shiftedKey: "A".unicodeScalars.first,
                                    baseLayoutKey: nil),
                      flags: [.disambiguate, .reportAlternates],
-                     expected: "\u{1b}[97:65;2u")
+                     expected: "A")
     }
 
-    func testMatchingUnshiftedCodepointUsesBaseAlternate() {
+    func testShiftEqualsWithReportAlternatesSendsPlus() {
+        for flags: KittyKeyboardFlags in [[.disambiguate, .reportAlternates],
+                                          [.disambiguate, .reportEvents, .reportAlternates]] {
+            assertEncode(KittyKeyEvent(key: .unicode(61),
+                                       modifiers: [.shift],
+                                       eventType: .press,
+                                       text: "+",
+                                       shiftedKey: "+".unicodeScalars.first,
+                                       baseLayoutKey: nil),
+                         flags: flags,
+                         expected: "+")
+        }
+    }
+
+    func testShiftEqualsWithReportAllKeysStillUsesCsiUWithAlternates() {
+        assertEncode(KittyKeyEvent(key: .unicode(61),
+                                   modifiers: [.shift],
+                                   eventType: .press,
+                                   text: "+",
+                                   shiftedKey: "+".unicodeScalars.first,
+                                   baseLayoutKey: nil),
+                     flags: [.disambiguate, .reportAlternates, .reportAllKeys],
+                     expected: "\u{1b}[61:43;2u")
+    }
+
+    func testMatchingUnshiftedCodepointWithReportAlternatesSendsText() {
         assertEncode(KittyKeyEvent(key: .unicode(65),
                                    modifiers: [.shift],
                                    eventType: .press,
@@ -196,7 +226,7 @@ final class KittyKeyboardEncoderTests: XCTestCase {
                                    shiftedKey: nil,
                                    baseLayoutKey: "a".unicodeScalars.first),
                      flags: [.disambiguate, .reportAlternates],
-                     expected: "\u{1b}[65::97;2u")
+                     expected: "A")
     }
 
     func testReportAlternatesBaseOnly() {

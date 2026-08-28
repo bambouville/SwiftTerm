@@ -10,6 +10,16 @@ import Testing
 
 @testable import SwiftTerm
 
+/// Minimal front-end stand-in: forwards `linesTrimmed` to a selection the
+/// way `AppleTerminalView` does.
+final class TrimTrackingDelegate: TerminalDelegate {
+    var selection: SelectionService?
+    func send(source: Terminal, data: ArraySlice<UInt8>) {}
+    func linesTrimmed(source: Terminal, count: Int) {
+        selection?.shiftRows (by: -count)
+    }
+}
+
 final class SelectionTests: TerminalDelegate {
     func send(source: Terminal, data: ArraySlice<UInt8>) {
         print ("here")
@@ -117,6 +127,55 @@ final class SelectionTests: TerminalDelegate {
 
     /// Test select all
     /// From Ghostty: selection of entire buffer
+    @Test func testShiftRowsTracksTrimmedScrollback() {
+        let terminal = Terminal(delegate: self, options: TerminalOptions (cols: 10, rows: 10))
+        let selection = SelectionService(terminal: terminal)
+        for i in 0..<20 { terminal.feed (text: "line\(i)\r\n") }
+        selection.setSelection (start: Position (col: 1, row: 5), end: Position (col: 3, row: 7))
+        #expect(selection.active)
+
+        selection.shiftRows (by: -2)
+        #expect(selection.active)
+        #expect(selection.start == Position (col: 1, row: 3))
+        #expect(selection.end == Position (col: 3, row: 5))
+
+        // Partially trimmed: clipped to the first remaining row.
+        selection.shiftRows (by: -4)
+        #expect(selection.active)
+        #expect(selection.start == Position (col: 0, row: 0))
+        #expect(selection.end == Position (col: 3, row: 1))
+
+        // Fully trimmed: the selection is gone.
+        selection.shiftRows (by: -2)
+        #expect(!selection.active)
+    }
+
+    @Test func testSelectionSurvivesOutputAndFollowsScrollbackOverflow() {
+        let terminal = Terminal(delegate: self, options: TerminalOptions (cols: 10, rows: 4, scrollback: 4))
+        let view = TrimTrackingDelegate ()
+        terminal.tdel = view
+        let selection = SelectionService(terminal: terminal)
+        view.selection = selection
+        for i in 0..<6 { terminal.feed (text: "row\(i)\r\n") }
+        // Buffer holds 8 rows (4 + 4 scrollback); select "row5" wherever it landed.
+        func rowIndex (of prefix: String) -> Int? {
+            (0..<terminal.buffer.lines.count).first {
+                terminal.buffer.lines [$0].translateToString (trimRight: true).hasPrefix (prefix)
+            }
+        }
+        let target = rowIndex (of: "row5")!
+        selection.setSelection (start: Position (col: 0, row: target), end: Position (col: 4, row: target))
+        let before = selection.getSelectedText ()
+        #expect(before == "row5")
+        // Overflow the scrollback: each new line trims one row from the top.
+        for i in 6..<10 { terminal.feed (text: "row\(i)\r\n") }
+        #expect(selection.active)
+        #expect(selection.getSelectedText () == "row5")
+        // Keep pushing until the selected row leaves the buffer entirely.
+        for i in 10..<20 { terminal.feed (text: "row\(i)\r\n") }
+        #expect(!selection.active)
+    }
+
     @Test func testSelectAll() {
         let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 10, rows: 5))
         let selection = SelectionService(terminal: terminal)

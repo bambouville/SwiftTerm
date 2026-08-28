@@ -523,6 +523,30 @@ class SelectionService: CustomDebugStringConvertible {
     }
     
     /**
+     * Moves the selection by `delta` buffer rows (negative when lines were
+     * trimmed from the top of the buffer). The selection is cleared once it
+     * no longer overlaps any existing row; a range that is only partially
+     * trimmed is clipped to row 0.
+     */
+    public func shiftRows (by delta: Int) {
+        guard active, delta != 0 else { return }
+        let newEndRow = end.row + delta
+        if newEndRow < 0 {
+            selectNone ()
+            return
+        }
+        var newStart = Position (col: start.col, row: start.row + delta)
+        if newStart.row < 0 {
+            newStart = Position (col: 0, row: 0)
+        }
+        start = newStart
+        end = Position (col: end.col, row: newEndRow)
+        if let p = pivot {
+            pivot = Position (col: p.col, row: max (p.row + delta, 0))
+        }
+    }
+
+    /**
      * Clears the selection
      */
     public func selectNone ()

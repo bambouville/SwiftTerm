@@ -220,13 +220,13 @@ struct KittyKeyboardEncoder {
         if let text = event.text, !text.isEmpty {
             switch event.key {
             case .unicode, .none:
-                // In non-report-all mode we keep plain-text fast paths, but
-                // when alternates are requested for shifted/base-layout keys we
-                // must emit CSI-u to carry alternate metadata.
-                if wantsAlternates &&
-                    (event.modifiers.contains(.shift) || event.shiftedKey != nil || event.baseLayoutKey != nil) {
-                    break
-                }
+                // Text-producing keys stay plain text unless "report all keys
+                // as escape codes" is on. This matches kitty's reference
+                // encoder (`send_text_standalone = !report_text`): the
+                // "report alternate keys" flag only decorates events that are
+                // already escape-coded, it never turns shift+key text into
+                // CSI u. Apps that request alternates (Claude Code pushes
+                // flags 5, Codex 7) expect "+" for shift+=, not `61:43;2u`.
                 let hasAltOrCtrl = event.modifiers.contains(.alt) || event.modifiers.contains(.ctrl)
                 if !wantsDisambiguate || !hasAltOrCtrl {
                     if event.eventType != .release {

@@ -1899,11 +1899,19 @@ extension TerminalView {
     func feedPrepare()
     {
         search.invalidate()
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
-            selection.active = false
-        }
+        // The selection deliberately survives incoming output: it tracks
+        // buffer rows, and `linesTrimmed` keeps it anchored to the same
+        // content when the scrollback overflows. Only a tap, a copy, a
+        // resize or a buffer switch dismisses it.
         startDisplayUpdates()
+    }
+
+    /// Keeps the selection anchored to its content when lines are dropped
+    /// from the top of the buffer; clears it once it has scrolled out of
+    /// the buffer entirely.
+    public func linesTrimmed(source: Terminal, count: Int) {
+        guard let selection = self.selection, selection.active else { return }
+        selection.shiftRows(by: -count)
     }
     
     func feedFinish ()

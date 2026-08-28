@@ -79,6 +79,14 @@ public protocol TerminalDelegate: AnyObject {
     /// Callback - the window was scrolled, new yDisplay passed
     /// The default implementation does nothing.
     func scrolled (source: Terminal, yDisp: Int)
+
+    /**
+     * Invoked when `count` lines were dropped from the top of the active
+     * buffer (scrollback overflow, ED 3, history resize). Buffer-absolute
+     * row indices held by the front-end (selections, marks) move up by
+     * `count`; rows that fall below zero no longer exist.
+     */
+    func linesTrimmed (source: Terminal, count: Int)
     
     /// Callback a newline was generated
     /// The default implementation does nothing.
@@ -704,6 +712,11 @@ open class Terminal {
         
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
         altBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
+        normalBuffer.linesTrimmed = { [weak self] count in
+            guard let self else { return }
+            self.tdel?.linesTrimmed (source: self, count: count)
+        }
+        altBuffer.linesTrimmed = normalBuffer.linesTrimmed
 
         setupTabStops()
 
@@ -794,6 +807,10 @@ open class Terminal {
     public func resetNormalBuffer() {
         normalBuffer = Buffer(cols: cols, rows: rows, tabStopWidth: tabStopWidth, scrollback: options.scrollback)
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
+        normalBuffer.linesTrimmed = { [weak self] count in
+            guard let self else { return }
+            self.tdel?.linesTrimmed (source: self, count: count)
+        }
 
         normalBuffer.fillViewportRows()
         normalBuffer.setupTabStops(tabStopWidth: tabStopWidth)
@@ -2400,6 +2417,7 @@ open class Terminal {
                 buffer.linesTop = 0
                 buffer.yBase = max (buffer.yBase - scrollBackSize, 0)
                 buffer.yDisp = max (buffer.yDisp - scrollBackSize, 0)
+                tdel?.linesTrimmed (source: self, count: scrollBackSize)
                 // The viewport rows kept their content, but every backing
                 // index changed and yDisp moved: mark the screen dirty and
                 // emit scrolled so front-ends resync scroll geometry to the
@@ -5298,6 +5316,7 @@ open class Terminal {
             if bottomRow == lines.count - 1 {
                 if willBufferBeTrimmed {
                     lines.recycle (clearAttribute: eraseAttr())
+                    tdel?.linesTrimmed (source: self, count: 1)
                 } else {
                     lines.push (BufferLine (from: newLine))
                 }
@@ -6723,6 +6742,10 @@ public struct KittyKeyboardModeSnapshot {
 public extension TerminalDelegate {
     func cursorStyleChanged (source: Terminal, newStyle: CursorStyle)
     {
+        // Do nothing
+    }
+
+    func linesTrimmed (source: Terminal, count: Int) {
         // Do nothing
     }
     

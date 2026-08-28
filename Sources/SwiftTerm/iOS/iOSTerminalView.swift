@@ -1324,6 +1324,13 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var lineLeading: CGFloat = 0
     
     open func bufferActivated(source: Terminal) {
+        // Switching between the normal and alternate screen replaces every
+        // visible row, so a selection made on the previous buffer no longer
+        // refers to anything on screen.
+        if selection.active {
+            selection.selectNone()
+            disableSelectionPanGesture()
+        }
         updateScroller ()
     }
     
@@ -1404,11 +1411,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     }
     
     open func linefeed(source: Terminal) {
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
-            selection.selectNone()
-            disableSelectionPanGesture()
-        }
+        // Output never dismisses a selection; see `feedPrepare`.
     }
     
     func updateScroller ()

@@ -552,6 +552,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     open func bufferActivated(source: Terminal) {
+        if selection.active {
+            selection.selectNone()
+        }
         updateScroller ()
     }
     
@@ -583,10 +586,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     open func linefeed(source: Terminal) {
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
-            selection.selectNone()
-        }
+        // Output never dismisses a selection; see `feedPrepare`.
     }
     
     /// This vaiable controls whether mouse events are sent to the application running under the
