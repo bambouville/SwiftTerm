@@ -2345,131 +2345,143 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 continue
             }
                 
-            var data: SendData? = nil
+            // A held modifier on a special key is encoded first: the switch
+            // below matches on `keyCode` alone, so ⇧↑ would otherwise arrive
+            // at the application as a bare `ESC [ A`. `sequence` returns nil
+            // for an unmodified press and for the chords this view already
+            // spells its own way, so the switch keeps every case it had.
+            var data: SendData? = ModifiedSpecialKey
+                .sequence(for: key, optionAsMetaKey: optionAsMetaKey)
+                .map { SendData.bytes($0) }
 
-            switch key.keyCode {
-            case .keyboardCapsLock:
-                break // ignored
-            case .keyboardLeftAlt:
-                break // ignored
-            case .keyboardLeftControl:
-                break // ignored
-            case .keyboardLeftGUI:
-                commandActive = true
-                break // ignored
-            case .keyboardLeftShift:
-                break // ignored
-            case .keyboardLockingCapsLock:
-                break // ignored
-            case .keyboardLockingNumLock:
-                break // ignored
-            case .keyboardLockingScrollLock:
-                break // ignored
-            case .keyboardRightAlt:
-                break // ignored
-            case .keyboardRightControl:
-                break // ignored
-            case .keyboardRightGUI:
-                commandActive = true
-                break // ignored
-            case .keyboardRightShift:
-                break // ignored
-            case .keyboardScrollLock:
-                break // ignored
-            case .keyboardUpArrow:
-                data = .bytes (terminal.applicationCursor ? EscapeSequences.moveUpApp : EscapeSequences.moveUpNormal)
-            case .keyboardDownArrow:
-                data = .bytes (terminal.applicationCursor ? EscapeSequences.moveDownApp : EscapeSequences.moveDownNormal)
-            case .keyboardLeftArrow:
-                if key.modifierFlags.contains ([.alternate]) {
-                    data = .bytes (EscapeSequences.emacsBack)
-                } else if key.modifierFlags.contains ([.control]) {
-                    data = .bytes (EscapeSequences.controlLeft)
-                } else {
-                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveLeftApp : EscapeSequences.moveLeftNormal)
-                }
-            case .keyboardRightArrow:
-                if key.modifierFlags.contains ([.alternate]) {
-                    data = .bytes (EscapeSequences.emacsForward)
-                } else if key.modifierFlags.contains ([.control]) {
-                    data = .bytes (EscapeSequences.controlRight)
-                } else {
-                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveRightApp : EscapeSequences.moveRightNormal)
-                }
-            case .keyboardPageUp:
-                if terminal.applicationCursor {
-                    data = .bytes (EscapeSequences.cmdPageUp)
-                } else {
-                    pageUp()
-                }
+            if data == nil {
+                switch key.keyCode {
+                case .keyboardCapsLock:
+                    break // ignored
+                case .keyboardLeftAlt:
+                    break // ignored
+                case .keyboardLeftControl:
+                    break // ignored
+                case .keyboardLeftGUI:
+                    commandActive = true
+                    break // ignored
+                case .keyboardLeftShift:
+                    break // ignored
+                case .keyboardLockingCapsLock:
+                    break // ignored
+                case .keyboardLockingNumLock:
+                    break // ignored
+                case .keyboardLockingScrollLock:
+                    break // ignored
+                case .keyboardRightAlt:
+                    break // ignored
+                case .keyboardRightControl:
+                    break // ignored
+                case .keyboardRightGUI:
+                    commandActive = true
+                    break // ignored
+                case .keyboardRightShift:
+                    break // ignored
+                case .keyboardScrollLock:
+                    break // ignored
+                case .keyboardUpArrow:
+                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveUpApp : EscapeSequences.moveUpNormal)
+                case .keyboardDownArrow:
+                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveDownApp : EscapeSequences.moveDownNormal)
+                case .keyboardLeftArrow:
+                    if key.modifierFlags.contains ([.alternate]) {
+                        data = .bytes (EscapeSequences.emacsBack)
+                    } else if key.modifierFlags.contains ([.control]) {
+                        data = .bytes (EscapeSequences.controlLeft)
+                    } else {
+                        data = .bytes (terminal.applicationCursor ? EscapeSequences.moveLeftApp : EscapeSequences.moveLeftNormal)
+                    }
+                case .keyboardRightArrow:
+                    if key.modifierFlags.contains ([.alternate]) {
+                        data = .bytes (EscapeSequences.emacsForward)
+                    } else if key.modifierFlags.contains ([.control]) {
+                        data = .bytes (EscapeSequences.controlRight)
+                    } else {
+                        data = .bytes (terminal.applicationCursor ? EscapeSequences.moveRightApp : EscapeSequences.moveRightNormal)
+                    }
+                case .keyboardPageUp:
+                    if terminal.applicationCursor {
+                        data = .bytes (EscapeSequences.cmdPageUp)
+                    } else {
+                        pageUp()
+                    }
 
-            case .keyboardPageDown:
-                if terminal.applicationCursor {
-                    data = .bytes (EscapeSequences.cmdPageDown)
-                } else {
-                    pageDown()
-                }
-            case .keyboardHome:
-                data = .bytes (terminal.applicationCursor ? EscapeSequences.moveHomeApp : EscapeSequences.moveHomeNormal)
+                case .keyboardPageDown:
+                    if terminal.applicationCursor {
+                        data = .bytes (EscapeSequences.cmdPageDown)
+                    } else {
+                        pageDown()
+                    }
+                case .keyboardHome:
+                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveHomeApp : EscapeSequences.moveHomeNormal)
                 
-            case .keyboardEnd:
-                data = .bytes (terminal.applicationCursor ? EscapeSequences.moveEndApp : EscapeSequences.moveEndNormal)
-            case .keyboardDeleteForward:
-                data = .bytes (EscapeSequences.cmdDelKey)
+                case .keyboardEnd:
+                    data = .bytes (terminal.applicationCursor ? EscapeSequences.moveEndApp : EscapeSequences.moveEndNormal)
+                case .keyboardDeleteForward:
+                    data = .bytes (EscapeSequences.cmdDelKey)
                 
-            case .keyboardEscape:
-                data = .bytes ([0x1b])
+                case .keyboardEscape:
+                    data = .bytes ([0x1b])
                 
-            case .keyboardInsert:
-                print (".keyboardInsert ignored")
-                break
+                case .keyboardInsert:
+                    print (".keyboardInsert ignored")
+                    break
                 
-            case .keyboardTab:
-                if key.modifierFlags.contains ([.shift]) {
-                    data = .bytes (EscapeSequences.cmdBackTab)
-                } else {
-                    data = .bytes ([9])
-                }
+                case .keyboardTab:
+                    if key.modifierFlags.contains ([.shift]) {
+                        data = .bytes (EscapeSequences.cmdBackTab)
+                    } else {
+                        data = .bytes ([9])
+                    }
 
-            case .keyboardF1:
-                data = .bytes (EscapeSequences.cmdF [0])
-            case .keyboardF2:
-                data = .bytes (EscapeSequences.cmdF [1])
-            case .keyboardF3:
-                data = .bytes (EscapeSequences.cmdF [2])
-            case .keyboardF4:
-                data = .bytes (EscapeSequences.cmdF [3])
-            case .keyboardF5:
-                data = .bytes (EscapeSequences.cmdF [4])
-            case .keyboardF6:
-                data = .bytes (EscapeSequences.cmdF [5])
-            case .keyboardF7:
-                data = .bytes (EscapeSequences.cmdF [6])
-            case .keyboardF8:
-                data = .bytes (EscapeSequences.cmdF [7])
-            case .keyboardF9:
-                data = .bytes (EscapeSequences.cmdF [8])
-            case .keyboardF10:
-                data = .bytes (EscapeSequences.cmdF [8])
-            case .keyboardF11:
-                data = .bytes (EscapeSequences.cmdF [10])
-            case .keyboardF12, .keyboardF13, .keyboardF14, .keyboardF15, .keyboardF16,
-                 .keyboardF17, .keyboardF18, .keyboardF19, .keyboardF20, .keyboardF21,
-                 .keyboardF22, .keyboardF23, .keyboardF24:
-                break
-            case .keyboardPause, .keyboardStop, .keyboardMute, .keyboardVolumeUp, .keyboardVolumeDown:
-                break
+                case .keyboardF1:
+                    data = .bytes (EscapeSequences.cmdF [0])
+                case .keyboardF2:
+                    data = .bytes (EscapeSequences.cmdF [1])
+                case .keyboardF3:
+                    data = .bytes (EscapeSequences.cmdF [2])
+                case .keyboardF4:
+                    data = .bytes (EscapeSequences.cmdF [3])
+                case .keyboardF5:
+                    data = .bytes (EscapeSequences.cmdF [4])
+                case .keyboardF6:
+                    data = .bytes (EscapeSequences.cmdF [5])
+                case .keyboardF7:
+                    data = .bytes (EscapeSequences.cmdF [6])
+                case .keyboardF8:
+                    data = .bytes (EscapeSequences.cmdF [7])
+                case .keyboardF9:
+                    data = .bytes (EscapeSequences.cmdF [8])
+                case .keyboardF10:
+                    data = .bytes (EscapeSequences.cmdF [9])
+                case .keyboardF11:
+                    data = .bytes (EscapeSequences.cmdF [10])
+                case .keyboardF12:
+                    data = .bytes (EscapeSequences.cmdF [11])
+                case .keyboardF13, .keyboardF14, .keyboardF15, .keyboardF16,
+                     .keyboardF17, .keyboardF18, .keyboardF19, .keyboardF20, .keyboardF21,
+                     .keyboardF22, .keyboardF23, .keyboardF24:
+                    // No entry in `cmdF`, so there is nothing to send.
+                    break
+                case .keyboardPause, .keyboardStop, .keyboardMute, .keyboardVolumeUp, .keyboardVolumeDown:
+                    break
                 
-            default:
-                if key.modifierFlags.contains ([.alternate, .command]) && key.charactersIgnoringModifiers == "o" {
-                    optionAsMetaKey.toggle()
-                } else if (key.modifierFlags.contains (.alternate) && optionAsMetaKey) || metaModifier {
-                    data = .text("\u{1b}\(key.charactersIgnoringModifiers)")
-                    metaModifier = false
-                } else if key.modifierFlags.contains (.control) {
-                    let controlBytes = applyControlToEventCharacters(key.charactersIgnoringModifiers)
-                    if !controlBytes.isEmpty {
-                        data = .bytes(controlBytes)
+                default:
+                    if key.modifierFlags.contains ([.alternate, .command]) && key.charactersIgnoringModifiers == "o" {
+                        optionAsMetaKey.toggle()
+                    } else if (key.modifierFlags.contains (.alternate) && optionAsMetaKey) || metaModifier {
+                        data = .text("\u{1b}\(key.charactersIgnoringModifiers)")
+                        metaModifier = false
+                    } else if key.modifierFlags.contains (.control) {
+                        let controlBytes = applyControlToEventCharacters(key.charactersIgnoringModifiers)
+                        if !controlBytes.isEmpty {
+                            data = .bytes(controlBytes)
+                        }
                     }
                 }
             }
