@@ -83,6 +83,15 @@ struct ViewLineInfo {
     var boxDrawings: [BoxDrawingRenderItem]
 }
 
+struct PreparedCoreGraphicsRow {
+    let cells: [CharData]
+    let columns: Int
+    let customBlocks: Bool
+    let linkMode: LinkHighlightMode
+    let info: ViewLineInfo
+    let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])]
+}
+
 extension TerminalView {
     typealias CellDimension = CGSize
     
@@ -90,6 +99,9 @@ extension TerminalView {
     {
         self.attributes = [:]
         self.urlAttributes = [:]
+#if os(iOS) || os(visionOS)
+        coreGraphicsRows.removeAll(keepingCapacity: true)
+#endif
         self.colors = Array(repeating: nil, count: 256)
         self.trueColors = [:]
     }
@@ -290,6 +302,9 @@ extension TerminalView {
     {
         urlAttributes = [:]
         attributes = [:]
+#if os(iOS) || os(visionOS)
+        coreGraphicsRows.removeAll(keepingCapacity: true)
+#endif
         
         terminal.updateFullScreen ()
         queuePendingDisplay()
@@ -1143,6 +1158,55 @@ extension TerminalView {
 
     
     // TODO: this should not render any lines outside the dirtyRect
+    /// Compare cell values, not line identity: output, history recycling, frozen
+    /// synchronized buffers and alternate-screen swaps can all reuse row indices.
+    /// Keep dynamic selection/link/image rendering on the uncached path.
+    func prepareCoreGraphicsRow(row: Int, line: BufferLine, cols: Int) -> PreparedCoreGraphicsRow {
+#if os(iOS) || os(visionOS)
+        let cacheable = cachesCoreGraphicsRows && selection?.active != true
+            && linkHighlightRange == nil && !commandActive && line.images == nil
+            && terminal.kittyGraphicsState.placementsByKey.isEmpty
+        if cacheable, let cached = coreGraphicsRows[row], cached.columns == cols,
+           cached.customBlocks == customBlockGlyphs, cached.linkMode == linkHighlightMode,
+           cached.cells.count == line.count {
+            var matches = true
+            for column in 0..<line.count {
+                let old = cached.cells[column], current = line[column]
+                if old.code != current.code || old.width != current.width
+                    || old.attribute != current.attribute || old.payload.code != current.payload.code
+                    || current.code >= CharData.maxRune {
+                    matches = false
+                    break
+                }
+            }
+            if matches { return cached }
+        }
+#endif
+        let info = buildAttributedString(row: row, line: line, cols: cols)
+        let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])] =
+            info.segments.compactMap { segment in
+                guard segment.attributedString.length > 0 else { return nil }
+                let ctLine = CTLineCreateWithAttributedString(segment.attributedString)
+                guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
+                return (segment, ctLine, runs)
+            }
+#if os(iOS) || os(visionOS)
+        let cells = cacheable && info.kittyPlaceholders.isEmpty ? line.getData() : []
+#else
+        let cells: [CharData] = []
+#endif
+        let result = PreparedCoreGraphicsRow(cells: cells, columns: cols,
+            customBlocks: customBlockGlyphs, linkMode: linkHighlightMode, info: info, segments: segments)
+#if os(iOS) || os(visionOS)
+        if cacheable && info.kittyPlaceholders.isEmpty {
+            coreGraphicsRows[row] = result
+        } else {
+            coreGraphicsRows.removeValue(forKey: row)
+        }
+#endif
+        return result
+    }
+
     func drawTerminalContents (dirtyRect: TTRect, context: CGContext, bufferOffset: Int)
     {
         let lineDescent = CTFontGetDescent(fontSet.normal)
@@ -1172,6 +1236,10 @@ extension TerminalView {
         let lastRow = displayBuffer.yDisp+Int((boundsMaxY-dirtyRect.minY)/cellHeight)
         #endif
 
+#if os(iOS) || os(visionOS)
+        // Bound retained cells and CoreText objects to the visible viewport.
+        coreGraphicsRows = coreGraphicsRows.filter { $0.key >= firstRow && $0.key <= lastRow }
+#endif
         let isAltBuffer = terminal.isCurrentBufferAlternate
         var virtualPlacementsByImageId: [UInt32: [KittyPlacementRecord]] = [:]
         if !terminal.kittyGraphicsState.placementsByKey.isEmpty {
@@ -1242,7 +1310,8 @@ extension TerminalView {
             } 
             #endif
             let line = displayBuffer.lines [row]
-            let lineInfo = buildAttributedString(row: row, line: line, cols: displayBuffer.cols)
+            let preparedRow = prepareCoreGraphicsRow(row: row, line: line, cols: displayBuffer.cols)
+            let lineInfo = preparedRow.info
             let rowBase = lineOrigin.y + cellDimension.height
             var underTextImages: [AppleImage] = []
             var overTextKittyImages: [AppleImage] = []
@@ -1275,13 +1344,7 @@ extension TerminalView {
             }
 
             // Pre-create CTLines and runs once per row to avoid duplicate creation
-            let preparedSegments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])] =
-                lineInfo.segments.compactMap { segment in
-                    guard segment.attributedString.length > 0 else { return nil }
-                    let ctLine = CTLineCreateWithAttributedString(segment.attributedString)
-                    guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
-                    return (segment, ctLine, runs)
-                }
+            let preparedSegments = preparedRow.segments
 
             // Background fill loop — uses cached CTLines
             context.saveGState()

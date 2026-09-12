@@ -219,6 +219,10 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
     // Attribute dictionary, maps a console attribute (color, flags) to the corresponding dictionary
     // of attributes for an NSAttributedString
+    /// Reuse unchanged CoreGraphics text shaping during continuous scrolling.
+    /// Disable for renderer differential tests; viewport/physics are unaffected.
+    public var cachesCoreGraphicsRows = true
+    var coreGraphicsRows: [Int: PreparedCoreGraphicsRow] = [:]
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
 
