@@ -1535,6 +1535,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
         drawTerminalContents (dirtyRect: dirtyRect, context: context, bufferOffset: 0)
     }
+    /// Commit a layout-driven terminal grid change. Embedders may defer this
+    /// proposal while modal/window geometry is transient; bytes keep using the
+    /// current grid until the embedder calls the inherited implementation.
+    open func layoutTerminalSizeChanged(to newSize: CGSize) {
+        processSizeChange(newSize: newSize)
+        updateCursorPosition()
+    }
+
     open override func layoutSubviews() {
         super.layoutSubviews()
         guard didFinishSetup else { return }
@@ -1544,8 +1552,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let originChanged = currentBounds.origin != lastLayoutBounds.origin
 
         if sizeChanged {
-            processSizeChange(newSize: currentBounds.size)
-            updateCursorPosition()
+            layoutTerminalSizeChanged(to: currentBounds.size)
         }
 
 #if canImport(MetalKit)
