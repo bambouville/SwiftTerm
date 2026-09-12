@@ -326,7 +326,14 @@ extension TerminalView {
 
     public func synchronizedOutputChanged (source: Terminal, active: Bool)
     {
+        #if os(iOS) || os(visionOS)
+        // A synchronized frame swaps the displayed buffer snapshot, not the
+        // reader's viewport. Idle TUI animations can toggle this every frame.
+        // Preserve fractional offsets too, including the timeout-driven end.
+        updateSynchronizedScroller(active: active)
+        #else
         updateScroller()
+        #endif
         queuePendingDisplay()
     }
 
@@ -1910,6 +1917,9 @@ extension TerminalView {
     /// from the top of the buffer; clears it once it has scrolled out of
     /// the buffer entirely.
     public func linesTrimmed(source: Terminal, count: Int) {
+        #if os(iOS) || os(visionOS)
+        noteSynchronizedTrimmedRows(count)
+        #endif
         guard let selection = self.selection, selection.active else { return }
         selection.shiftRows(by: -count)
     }

@@ -41,6 +41,11 @@ public protocol TerminalViewDelegate: AnyObject {
      * - Parameter position: the relative position that the code was scrolled to, a value between 0 and 1
      */
     func scrolled (source: TerminalView, position: Double)
+
+    /// iOS scrollback coordinates were rebased after history was discarded.
+    /// Retained application scroll anchors must subtract this logical-point
+    /// distance. Synchronized frames defer this until their snapshot releases.
+    func scrollbackTrimmed(source: TerminalView, points: Double)
     
     /**
      * Invoked when the user activates a link (click on macOS, tap on iOS/visionOS).
@@ -88,5 +93,8 @@ public protocol TerminalViewDelegate: AnyObject {
      */
     func rangeChanged (source: TerminalView, startY: Int, endY: Int)
 
+}
+extension TerminalViewDelegate {
+    public func scrollbackTrimmed(source: TerminalView, points: Double) {}
 }
 #endif
