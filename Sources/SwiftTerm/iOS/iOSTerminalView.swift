@@ -496,8 +496,26 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             if terminal.bracketedPasteMode {
                 send(data: EscapeSequences.bracketedPasteEnd[0...])
             }
+            discardTextInputMirror()
             queuePendingDisplay()
         }
+    }
+
+    /// Drops the UITextInput mirror because bytes reached the terminal by a
+    /// route the mirror does not model.
+    ///
+    /// `textInputStorage` is only a record of what *this* view typed, yet the
+    /// input system phrases its edits against it: `deleteBackward()` and
+    /// `replace(_:withText:)` both turn mirror offsets into backspaces sent to
+    /// the remote, and the double-space auto-period fires off
+    /// `textInputStorage.last == " "`. Once something else has appended to the
+    /// line - a paste, or a host-driven injection - those offsets no longer name
+    /// the characters they would delete, and the backspaces eat the tail of
+    /// whatever was inserted instead. Dropping the mirror leaves those edits
+    /// nothing to reach back into: a later backspace falls through to the raw
+    /// `sendBackspaceKey()` path, and the auto-period guard can no longer match.
+    public func discardTextInputMirror() {
+        resetInputBuffer()
     }
 
     @objc open override func copy(_ sender: Any?) {
