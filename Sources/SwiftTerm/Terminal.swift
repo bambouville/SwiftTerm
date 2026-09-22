@@ -5922,6 +5922,91 @@ open class Terminal {
         }
     }
     
+    /// A detached copy of the live grid, independent of the user's scrollback
+    /// position. Call synchronously on the same executor that owns feed/resize.
+    /// No mutable terminal storage escapes this value.
+    public struct LiveScreenSnapshot: Equatable {
+        public struct Cell: Equatable {
+            public let text: String
+            /// Physical width; zero marks a wide glyph's continuation cell.
+            public let width: Int
+            public let attribute: Attribute
+        }
+        public let columns: Int
+        public let rows: Int
+        public let cells: [Cell]
+        public let wrappedRows: [Bool]
+        public let cursorColumn: Int
+        public let cursorRow: Int
+        public let cursorVisible: Bool
+        public let isAlternate: Bool
+        /// Exact work and payload accounting, excluding retained terminal history.
+        public let visitedCells: Int
+        public let textUTF8Bytes: Int
+    }
+
+    public struct LiveScreenSnapshotLimits {
+        public let maximumCells: Int
+        public let maximumTextUTF8Bytes: Int
+        public init(maximumCells: Int = 65_536, maximumTextUTF8Bytes: Int = 65_536) {
+            self.maximumCells = maximumCells
+            self.maximumTextUTF8Bytes = maximumTextUTF8Bytes
+        }
+    }
+
+    public enum LiveScreenSnapshotError: Error, Equatable {
+        case incompleteFrame, invalidGeometry, cellLimit, textLimit
+    }
+
+    /// Copies only `rows * cols` live cells from the active primary/alternate
+    /// buffer. In-progress synchronized frames and budget overflow fail without
+    /// exporting history or silently dropping style information.
+    public func liveScreenSnapshot(limits: LiveScreenSnapshotLimits = .init())
+        -> Result<LiveScreenSnapshot, LiveScreenSnapshotError> {
+        guard !synchronizedOutputActive else { return .failure(.incompleteFrame) }
+        guard rows > 0, cols > 0, limits.maximumCells >= 0,
+              limits.maximumTextUTF8Bytes >= 0 else { return .failure(.invalidGeometry) }
+        guard cols <= limits.maximumCells / rows else { return .failure(.cellLimit) }
+        let live = buffer
+        guard live.yBase >= 0, live.yBase <= live.lines.count,
+              rows <= live.lines.count - live.yBase,
+              live.y >= 0, live.y < rows, live.x >= 0, live.x <= cols
+        else { return .failure(.invalidGeometry) }
+        var cells: [LiveScreenSnapshot.Cell] = []
+        cells.reserveCapacity(rows * cols)
+        var wrapped: [Bool] = []
+        wrapped.reserveCapacity(rows)
+        var textBytes = 0
+        var visited = 0
+        for row in 0..<rows {
+            let line = live.lines[live.yBase + row]
+            guard line.count >= cols else { return .failure(.invalidGeometry) }
+            wrapped.append(line.isWrapped)
+            for column in 0..<cols {
+                let cell = line[column]
+                visited += 1
+                guard cell.width >= 0, cell.width <= 2 else { return .failure(.invalidGeometry) }
+                let text: String
+                if cell.width == 0 { text = "" }
+                else {
+                    let character = getCharacter(for: cell)
+                    // Validate before constructing a String: a combining
+                    // sequence stored in one cell may itself be oversized.
+                    for scalar in character.unicodeScalars {
+                        let width = scalar.value < 0x80 ? 1 : scalar.value < 0x800 ? 2 : scalar.value < 0x10000 ? 3 : 4
+                        guard width <= limits.maximumTextUTF8Bytes - textBytes else { return .failure(.textLimit) }
+                        textBytes += width
+                    }
+                    text = character == "\0" ? " " : String(character)
+                }
+                cells.append(.init(text: text, width: Int(cell.width), attribute: cell.attribute))
+            }
+        }
+        return .success(.init(columns: cols, rows: rows, cells: cells, wrappedRows: wrapped,
+            cursorColumn: live.x, cursorRow: live.y, cursorVisible: !cursorHidden,
+            isAlternate: isCurrentBufferAlternate, visitedCells: visited, textUTF8Bytes: textBytes))
+    }
+
     /// Returns the contents of the specified terminal buffer encoded as UTF8 in the provided Data buffer
     /// - Parameter kind: which buffer to retrive the data for
     /// - Parameter encoding: which encoding to use for the returned value, defaults to utf8
