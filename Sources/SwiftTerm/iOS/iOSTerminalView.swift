@@ -572,12 +572,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
     
-    /// Extra items appended whenever the terminal presents its edit/
+    /// Extra commands appended whenever the terminal presents its edit/
     /// context menu. The actions resolve through the responder chain,
     /// so hosts typically implement them on an ancestor view (this
     /// view's own `canPerformAction` returns false for them and UIKit
     /// keeps walking). Assign once; included on every presentation.
-    public var additionalMenuItems: [UIMenuItem] = []
+    /// `UICommand` rather than the deprecated `UIMenuItem`, so hosts
+    /// targeting iOS 16+ build them without deprecation warnings.
+    public var additionalMenuCommands: [UICommand] = []
 
     /// Backing store for the iOS 16+ edit-menu interaction. Typed `Any`
     /// so the stored property needs no availability gate.
@@ -610,7 +612,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             interaction.presentEditMenu(with: configuration)
         } else {
             let menuController = UIMenuController.shared
-            menuController.menuItems = additionalMenuItems
+            menuController.menuItems = additionalMenuCommands.map {
+                UIMenuItem(title: $0.title, action: $0.action)
+            }
             menuController.showMenu(from: self, rect: forRegion)
         }
     }
@@ -2825,9 +2829,8 @@ extension TerminalView: UIEditMenuInteractionDelegate {
         // against the responder chain; host-supplied items ride along
         // as UICommands, which UIKit validates and dispatches through
         // the same chain (hosts implement them on an ancestor view).
-        let extras: [UIMenuElement] = additionalMenuItems.map {
-            UICommand(title: $0.title, action: $0.action)
-        }
+        // Fresh copies per presentation, as each menu used to build its own.
+        let extras = additionalMenuCommands.compactMap { $0.copy() as? UIMenuElement }
         return UIMenu(children: suggestedActions + extras)
     }
 
