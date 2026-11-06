@@ -233,6 +233,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var trueColors: [Attribute.Color:UIColor] = [:]
     var transparent = TTColor.transparent ()
     private var lastLayoutBounds: CGRect = .zero
+    /// Set by a font change; the next layout proposes the grid even if the
+    /// bounds held still.
+    var pendingFontRefit = false
     
     // UITextInput support starts
     public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer (textInput: self) // TerminalInputTokenizer()
@@ -1478,6 +1481,19 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
 
+    /// Rebuilds the content size for a new row height and keeps the reader on
+    /// the row they were reading; a refit that changes the grid rebuilds both.
+    func rescaleScroller (fromCellHeight previousCellHeight: CGFloat)
+    {
+        let displayBuffer = terminal.displayBuffer
+        let lastTopRow = CGFloat (max (0, displayBuffer.lines.count - displayBuffer.rows))
+        let topRow = previousCellHeight > 0 ? contentOffset.y / previousCellHeight : lastTopRow
+        contentSize = CGSize (width: CGFloat (displayBuffer.cols) * cellDimension.width,
+                              height: CGFloat (displayBuffer.lines.count) * cellDimension.height)
+        // Bounds still hold the old rows here, so clamp in rows, not points.
+        contentOffset = CGPoint (x: 0, y: min (max (0, topRow), lastTopRow) * cellDimension.height)
+    }
+
     func updateScroller (preservePosition: Bool = false)
     {
         let previousOffset = contentOffset
@@ -1577,7 +1593,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let sizeChanged = currentBounds.size != lastLayoutBounds.size
         let originChanged = currentBounds.origin != lastLayoutBounds.origin
 
-        if sizeChanged {
+        if sizeChanged || pendingFontRefit {
+            pendingFontRefit = false
             layoutTerminalSizeChanged(to: currentBounds.size)
         }
 

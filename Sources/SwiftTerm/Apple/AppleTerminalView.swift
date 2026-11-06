@@ -110,10 +110,25 @@ extension TerminalView {
     func resetFont()
     {
         resetCaches()
+        #if os(iOS) || os(visionOS)
+        let previousCellHeight = cellDimension.height
+        #endif
         self.cellDimension = computeFontDimensions ()
+        #if os(iOS) || os(visionOS)
+        // The next layout refits the grid, through the same proposal a frame
+        // change makes: a host that sizes this view in cells of a grid it owns
+        // moves the frame for the new cells first, and refitting to the old
+        // frame here would resize that grid twice. A new font is no DECSTR
+        // either, so modes, margins and colours stay. A grid that holds is
+        // never rebuilt by that refit, so the scroller moves to the new rows now.
+        rescaleScroller(fromCellHeight: previousCellHeight)
+        pendingFontRefit = true
+        setNeedsLayout()
+        #else
         let newCols = Int(frame.width / cellDimension.width)
         let newRows = Int(frame.height / cellDimension.height)
         resize(cols: newCols, rows: newRows)
+        #endif
         updateCaretView()
         
         #if os(macOS)
