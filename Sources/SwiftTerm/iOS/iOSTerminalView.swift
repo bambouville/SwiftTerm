@@ -725,7 +725,16 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
 
         let col = Int (point.x / cellDimension.width)
-        let row = Int (point.y / cellDimension.height)
+        var row = Int (point.y / cellDimension.height)
+#if canImport(MetalKit)
+        // Metal draws whole rows down from the top of the view, starting at
+        // the row its placement puts there, where CoreGraphics draws each row
+        // at its place in the content.
+        if useMetalRenderer, let placed = MetalTerminalRenderer.visibleRowRange(
+            buffer: terminal.displayBuffer, cellHeight: cellDimension.height, terminalView: self) {
+            row = placed.2 + Int (floor ((point.y - contentOffset.y) / cellDimension.height))
+        }
+#endif
         if row < 0 {
             return (Position(col: 0, row: 0), toInt (point))
         }

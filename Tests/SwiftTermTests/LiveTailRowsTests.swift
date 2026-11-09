@@ -70,6 +70,28 @@ final class LiveTailRowsTests {
         #expect(view.calculateTapHit(point: history).grid.row < gridTop(view))
     }
 
+    /// Metal draws whole rows down from the top of the view, so a touch
+    /// lands on the row drawn under it, on the tail and off it, rather than
+    /// on the row the content offset would put there.
+    @Test func testATouchOnMetalLandsOnTheRowDrawnUnderIt() throws {
+        let view = makeView(partRow: 0.9)
+        try view.setUseMetal(true)
+        let cell = view.cellDimension.height
+        // On the tail, and three and a half rows into history.
+        for offRows in [0, 3.6] as [CGFloat] {
+            view.contentOffset.y = view.contentSize.height - view.bounds.height - offRows * cell
+            let placed = try #require(MetalTerminalRenderer.visibleRowRange(
+                buffer: view.terminal.displayBuffer, cellHeight: cell, terminalView: view))
+            for k in [0, 1, 5] {
+                // Halfway down the row drawn k rows from the top, where the
+                // content offset alone names a row half a row away.
+                let point = CGPoint(x: 5, y: view.contentOffset.y + (CGFloat(k) + 0.5) * cell)
+                #expect(view.calculateTapHit(point: point).grid.row == placed.2 + k,
+                        "\(offRows) rows off the tail, \(k) rows down")
+            }
+        }
+    }
+
     /// A frame that shrinks by less than the part row keeps its grid, and
     /// UIKit leaves the reader where they were, above the new clamp: the
     /// history row would show over the program again until output came.
