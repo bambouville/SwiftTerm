@@ -21,7 +21,9 @@ public final class BufferLine: CustomDebugStringConvertible {
         /// Renders the bottom of a character, using two cells
         case doubledDown
     }
-    var isWrapped: Bool
+    /// Whether this row goes on with the line of the row above it: output
+    /// ran past the end of that row, and a reflow keeps the line together.
+    public internal(set) var isWrapped: Bool
     var renderMode: RenderLineMode = .single
     private var data: UnsafeMutableBufferPointer<CharData>
     private var dataSize: Int
