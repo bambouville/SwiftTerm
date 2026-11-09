@@ -1434,11 +1434,22 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     }
 
     open func scrolled(source terminal: Terminal, yDisp: Int) {
-        // During a synchronized frame displayBuffer is the old snapshot.
-        // New live rows must not move a reader out of that snapshot.
-        let readingHistory = contentOffset.y < max(0, contentSize.height - bounds.height) - 1
-        updateScroller(preservePosition: synchronizedViewportBottom != nil && readingHistory)
+        // Output leaves a reader of history on the rows they are reading,
+        // however they got there; one on the live tail follows it. During a
+        // synchronized frame displayBuffer is the old snapshot, whose rows
+        // the new live ones must not move either.
+        updateScroller(preservePosition: readingHistory(tail: liveTailOffsetY))
         terminalDelegate?.scrolled(source: self, position: scrollPosition)
+    }
+
+    /// Where output parks a reader who follows it: the grid's last screen,
+    /// or the bounds' when the frame is taller than the grid.
+    private var liveTailOffsetY: CGFloat {
+        max(0, contentSize.height - max(bounds.height, CGFloat(terminal.displayBuffer.rows) * cellDimension.height))
+    }
+
+    private func readingHistory(tail: CGFloat) -> Bool {
+        contentOffset.y < tail - 1
     }
     
     open func linefeed(source: Terminal) {
@@ -1454,23 +1465,27 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if synchronizedViewportBottom != nil {
             synchronizedTrimmedRows += count
         } else {
+            // The rows went from above the reader's: their own rows moved up.
+            if readingHistory(tail: liveTailOffsetY) {
+                contentOffset.y = max(0, contentOffset.y - CGFloat(count) * cellDimension.height)
+            }
             terminalDelegate?.scrollbackTrimmed(source: self, points: Double(CGFloat(count) * cellDimension.height))
         }
     }
 
     func updateSynchronizedScroller(active: Bool) {
         if active {
-            synchronizedViewportBottom = max(0, contentSize.height - bounds.height)
+            synchronizedViewportBottom = liveTailOffsetY
             synchronizedViewportAlternate = terminal.isDisplayBufferAlternate
             synchronizedTrimmedRows = 0
         }
-        let oldBottom = synchronizedViewportBottom ?? max(0, contentSize.height - bounds.height)
+        let oldBottom = synchronizedViewportBottom ?? liveTailOffsetY
         let changedBuffer = synchronizedViewportAlternate != terminal.isDisplayBufferAlternate
-        let readingHistory = contentOffset.y < oldBottom - 1
-        if !active && readingHistory && !changedBuffer {
+        let reading = readingHistory(tail: oldBottom)
+        if !active && reading && !changedBuffer {
             contentOffset.y = max(0, contentOffset.y - CGFloat(synchronizedTrimmedRows) * cellDimension.height)
         }
-        updateScroller(preservePosition: readingHistory && !changedBuffer)
+        updateScroller(preservePosition: reading && !changedBuffer)
         if !active && !changedBuffer && synchronizedTrimmedRows > 0 {
             terminalDelegate?.scrollbackTrimmed(source: self,
                 points: Double(CGFloat(synchronizedTrimmedRows) * cellDimension.height))
