@@ -87,6 +87,15 @@ public protocol TerminalDelegate: AnyObject {
      * `count`; rows that fall below zero no longer exist.
      */
     func linesTrimmed (source: Terminal, count: Int)
+
+    /**
+     * Invoked when `count` blank rows were inserted at buffer row `row`
+     * without dropping any from the top: a scroll region whose bottom
+     * margin is above the last row moves a line into history, and the rows
+     * below the margin move down under the new one. Buffer-absolute row
+     * indices from `row` down move down by `count`; rows above keep theirs.
+     */
+    func linesInserted (source: Terminal, at row: Int, count: Int)
     
     /// Callback a newline was generated
     /// The default implementation does nothing.
@@ -5346,6 +5355,10 @@ open class Terminal {
                     trimKeepsRowsFrom = bottomRow + 1
                     tdel?.linesTrimmed (source: self, count: 1)
                     trimKeepsRowsFrom = nil
+                } else {
+                    // Room to spare: the rows below the margin move down
+                    // under the new row instead.
+                    tdel?.linesInserted (source: self, at: bottomRow + 1, count: 1)
                 }
             }
 
@@ -6854,6 +6867,10 @@ public extension TerminalDelegate {
     }
 
     func linesTrimmed (source: Terminal, count: Int) {
+        // Do nothing
+    }
+
+    func linesInserted (source: Terminal, at row: Int, count: Int) {
         // Do nothing
     }
     

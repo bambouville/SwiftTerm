@@ -548,6 +548,18 @@ class SelectionService: CustomDebugStringConvertible {
         }
     }
 
+    /// Moves the selection's rows from `row` down by `delta` rows; the rows
+    /// above keep their places (see `TerminalDelegate.linesInserted`).
+    public func shiftRows (from row: Int, by delta: Int) {
+        guard active, delta > 0 else { return }
+        func moved (_ r: Int) -> Int { r >= row ? r + delta : r }
+        start = Position (col: start.col, row: moved (start.row))
+        end = Position (col: end.col, row: moved (end.row))
+        if let p = pivot {
+            pivot = Position (col: p.col, row: moved (p.row))
+        }
+    }
+
     /**
      * Clears the selection
      */

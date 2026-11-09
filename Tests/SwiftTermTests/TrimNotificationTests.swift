@@ -37,6 +37,21 @@ final class TrimNotificationTests {
 
     /// A selection moves with the rows a trim moved: on a pinned prompt below
     /// a scroll region it stays, in the region it goes up with the text.
+    /// With room to spare the same region moves the rows below its margin
+    /// down under the new row instead, and says where; plain output only
+    /// appends.
+    @Test func testAScrollRegionWithRoomReportsWhereItInserts() {
+        let (t, d) = TerminalTestHarness.makeTerminal(cols: 10, rows: 5, scrollback: 100)
+        for i in 0..<20 { t.feed(text: "l\(i)\r\n") }
+        #expect(d.insertions.isEmpty, "plain output appends")
+        t.feed(text: "\u{1b}[5;1HPINNED\u{1b}[1;4r\u{1b}[4;1H" + "a\nb\nc\n")
+        #expect(d.trimmedCounts.isEmpty, "the scrollback has room")
+        let base = t.buffer.yBase
+        #expect(d.insertions.map(\.row) == [base + 1, base + 2, base + 3])
+        #expect(d.insertions.allSatisfy { $0.count == 1 })
+        #expect(t.buffer.lines[base + 4].translateToString(trimRight: true) == "PINNED")
+    }
+
     @Test func testASelectionKeepsThePinnedRowsAndFollowsTheScrolledOnes() {
         let (t, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 5, scrollback: 3)
         for i in 0..<20 { t.feed(text: "l\(i)\r\n") }

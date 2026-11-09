@@ -10,13 +10,16 @@ import Testing
 
 @testable import SwiftTerm
 
-/// Minimal front-end stand-in: forwards `linesTrimmed` to a selection the
-/// way `AppleTerminalView` does.
+/// Minimal front-end stand-in: forwards `linesTrimmed` and `linesInserted`
+/// to a selection the way `AppleTerminalView` does.
 final class TrimTrackingDelegate: TerminalDelegate {
     var selection: SelectionService?
     func send(source: Terminal, data: ArraySlice<UInt8>) {}
     func linesTrimmed(source: Terminal, count: Int) {
-        selection?.shiftRows (by: -count)
+        selection?.shiftRows (by: -count, keptFrom: source.trimKeepsRowsFrom)
+    }
+    func linesInserted(source: Terminal, at row: Int, count: Int) {
+        selection?.shiftRows (from: row, by: count)
     }
 }
 
@@ -85,6 +88,25 @@ final class SelectionTests: TerminalDelegate {
         // Scroll all the way back up, check the top-left corner
         view.scrollTo(row: 1)
         #expect(view.calculateMouseHit(at: CGPoint(x: 0, y: 10)).grid.row == 1)
+    }
+
+    /// The view itself keeps a selection on a row a scroll region pins
+    /// through the lines that region sends into history, before the
+    /// scrollback fills and after.
+    @Test func testTheViewKeepsASelectionOnAPinnedRow() {
+        for scrollback in [100, 3] {
+            let view = TerminalView(frame: CGRect(origin: .zero, size: .init(width: 400, height: 200)))
+            let terminal = view.terminal!
+            terminal.changeScrollback(scrollback)
+            let rows = terminal.rows
+            for i in 0..<40 { view.feed (text: "l\(i)\r\n") }
+            view.feed (text: "\u{1b}[\(rows);1HPINNED\u{1b}[1;\(rows - 1)r\u{1b}[\(rows - 1);1H")
+            let pinned = terminal.buffer.yBase + rows - 1
+            view.selection.setSelection (start: Position (col: 0, row: pinned), end: Position (col: 6, row: pinned))
+            #expect(view.getSelection () == "PINNED")
+            view.feed (text: "a\nb\nc\n")
+            #expect(view.getSelection () == "PINNED", "scrollback \(scrollback)")
+        }
     }
 #endif
 
@@ -174,6 +196,30 @@ final class SelectionTests: TerminalDelegate {
         // Keep pushing until the selected row leaves the buffer entirely.
         for i in 10..<20 { terminal.feed (text: "row\(i)\r\n") }
         #expect(!selection.active)
+    }
+
+    /// A scroll region whose bottom margin is above the last row pins the
+    /// rows below it (mosh's prompt, a program's input box) while the lines
+    /// above go into history: a selection on a pinned row keeps its text and
+    /// one on a scrolled row follows its own, before the scrollback fills and
+    /// after.
+    @Test func testSelectionKeepsItsTextThroughAScrollRegionsHistory() {
+        for scrollback in [100, 3] {
+            for (screenRow, text) in [(4, "PINNED"), (1, "l17")] {
+                let terminal = Terminal(delegate: self, options: TerminalOptions (cols: 10, rows: 5, scrollback: scrollback))
+                let view = TrimTrackingDelegate ()
+                terminal.tdel = view
+                let selection = SelectionService(terminal: terminal)
+                view.selection = selection
+                for i in 0..<20 { terminal.feed (text: "l\(i)\r\n") }
+                terminal.feed (text: "\u{1b}[5;1HPINNED\u{1b}[1;4r\u{1b}[4;1H")
+                let row = terminal.buffer.yBase + screenRow
+                selection.setSelection (start: Position (col: 0, row: row), end: Position (col: text.count, row: row))
+                #expect(selection.getSelectedText () == text)
+                terminal.feed (text: "a\nb\nc\n")
+                #expect(selection.getSelectedText () == text, "scrollback \(scrollback)")
+            }
+        }
     }
 
     @Test func testSelectAll() {

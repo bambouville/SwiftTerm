@@ -2001,6 +2001,13 @@ extension TerminalView {
         guard let selection = self.selection, selection.active else { return }
         selection.shiftRows(by: -count, keptFrom: source.trimKeepsRowsFrom)
     }
+
+    /// Keeps the selection on the rows a scroll region's margin pins when a
+    /// line goes into history above them without a trim.
+    public func linesInserted(source: Terminal, at row: Int, count: Int) {
+        guard let selection = self.selection, selection.active else { return }
+        selection.shiftRows(from: row, by: count)
+    }
     
     func feedFinish ()
     {
