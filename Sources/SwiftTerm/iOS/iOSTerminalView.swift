@@ -1438,35 +1438,41 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         // however they got there; one on the live tail follows it. During a
         // synchronized frame displayBuffer is the old snapshot, whose rows
         // the new live ones must not move either.
-        updateScroller(preservePosition: readingHistory(tail: liveTailOffsetY))
+        updateScroller(preservePosition: readingHistory(edge: historyEdgeOffsetY))
         terminalDelegate?.scrolled(source: self, position: scrollPosition)
     }
 
-    /// Where output parks a reader who follows it: the grid's last screen,
-    /// or the bounds' when the frame is taller than the grid.
-    private var liveTailOffsetY: CGFloat {
-        max(0, contentSize.height - max(bounds.height, CGFloat(terminal.displayBuffer.rows) * cellDimension.height))
+    /// A reader above this offset is reading history; one at or below it is
+    /// on the live tail, which output carries along. The tail reaches up to
+    /// the bounds' clamp, where UIKit rests a finger scrolled back down, and
+    /// to anything less than a whole row above the grid's last screen, where
+    /// output parks the reader: a frame up to a part row taller than the grid
+    /// rests a finger that part row above the park, and a frame that then
+    /// shrinks without a new grid leaves them there.
+    private var historyEdgeOffsetY: CGFloat {
+        let gridPark = contentSize.height - CGFloat(terminal.displayBuffer.rows) * cellDimension.height
+        return min(contentSize.height - bounds.height - 1, (gridPark - cellDimension.height).nextUp)
     }
 
-    private func readingHistory(tail: CGFloat) -> Bool {
-        contentOffset.y < tail - 1
+    private func readingHistory(edge: CGFloat) -> Bool {
+        contentOffset.y < edge
     }
     
     open func linefeed(source: Terminal) {
         // Output never dismisses a selection; see `feedPrepare`.
     }
     
-    private var synchronizedViewportBottom: CGFloat?
+    private var synchronizedHistoryEdge: CGFloat?
     private var synchronizedViewportAlternate = false
     private var synchronizedTrimmedRows = 0
 
     func noteSynchronizedTrimmedRows(_ count: Int) {
         guard !terminal.isCurrentBufferAlternate else { return }
-        if synchronizedViewportBottom != nil {
+        if synchronizedHistoryEdge != nil {
             synchronizedTrimmedRows += count
         } else {
             // The rows went from above the reader's: their own rows moved up.
-            if readingHistory(tail: liveTailOffsetY) {
+            if readingHistory(edge: historyEdgeOffsetY) {
                 contentOffset.y = max(0, contentOffset.y - CGFloat(count) * cellDimension.height)
             }
             terminalDelegate?.scrollbackTrimmed(source: self, points: Double(CGFloat(count) * cellDimension.height))
@@ -1475,13 +1481,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
     func updateSynchronizedScroller(active: Bool) {
         if active {
-            synchronizedViewportBottom = liveTailOffsetY
+            synchronizedHistoryEdge = historyEdgeOffsetY
             synchronizedViewportAlternate = terminal.isDisplayBufferAlternate
             synchronizedTrimmedRows = 0
         }
-        let oldBottom = synchronizedViewportBottom ?? liveTailOffsetY
         let changedBuffer = synchronizedViewportAlternate != terminal.isDisplayBufferAlternate
-        let reading = readingHistory(tail: oldBottom)
+        let reading = readingHistory(edge: synchronizedHistoryEdge ?? historyEdgeOffsetY)
         if !active && reading && !changedBuffer {
             contentOffset.y = max(0, contentOffset.y - CGFloat(synchronizedTrimmedRows) * cellDimension.height)
         }
@@ -1491,7 +1496,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 points: Double(CGFloat(synchronizedTrimmedRows) * cellDimension.height))
         }
         if !active {
-            synchronizedViewportBottom = nil
+            synchronizedHistoryEdge = nil
             synchronizedTrimmedRows = 0
         }
     }
