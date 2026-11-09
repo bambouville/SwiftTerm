@@ -712,11 +712,16 @@ open class Terminal {
         
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
         altBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
+        // Front-ends anchor the shown buffer's rows: the hidden one's trims
+        // (a resize trims both) move nothing they show.
         normalBuffer.linesTrimmed = { [weak self] count in
-            guard let self else { return }
+            guard let self, self.buffer === self.normalBuffer else { return }
             self.tdel?.linesTrimmed (source: self, count: count)
         }
-        altBuffer.linesTrimmed = normalBuffer.linesTrimmed
+        altBuffer.linesTrimmed = { [weak self] count in
+            guard let self, self.buffer === self.altBuffer else { return }
+            self.tdel?.linesTrimmed (source: self, count: count)
+        }
 
         setupTabStops()
 
@@ -808,7 +813,7 @@ open class Terminal {
         normalBuffer = Buffer(cols: cols, rows: rows, tabStopWidth: tabStopWidth, scrollback: options.scrollback)
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
         normalBuffer.linesTrimmed = { [weak self] count in
-            guard let self else { return }
+            guard let self, self.buffer === self.normalBuffer else { return }
             self.tdel?.linesTrimmed (source: self, count: count)
         }
 
@@ -5328,6 +5333,11 @@ open class Terminal {
                 lines.splice (start: bottomRow + 1, deleteCount: 0,
                                      items: [BufferLine (from: newLine)],
                                      change: { line in updateRange (line)})
+                // A full list drops its oldest row to make room, as the
+                // recycle above does (a bottom margin above the last row).
+                if willBufferBeTrimmed {
+                    tdel?.linesTrimmed (source: self, count: 1)
+                }
             }
 
             // Only adjust ybase and ydisp when the buffer is not trimmed
