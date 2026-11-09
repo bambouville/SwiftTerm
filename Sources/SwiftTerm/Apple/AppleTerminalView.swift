@@ -1241,8 +1241,9 @@ extension TerminalView {
         // positions, producing garbled output. contentOffset.y is always correct because
         // the scroll view is kept in sync with yDisp (contentOffset.y == yDisp * cellHeight).
         let cellHeight = cellDimension.height
-        let firstRow = Int(contentOffset.y / cellHeight)
-        let lastRow = firstRow + Int(ceil(bounds.height / cellHeight))
+        let topRow = Int(contentOffset.y / cellHeight)
+        let firstRow = firstDrawnRow(from: topRow)
+        let lastRow = topRow + Int(ceil(bounds.height / cellHeight))
         #else
         // On Mac, we are drawing the terminal buffer
         let cellHeight = cellDimension.height
@@ -1264,7 +1265,7 @@ extension TerminalView {
         }
         var placeholderImageCache: [UInt32: TTImage] = [:]
 
-        for row in firstRow...lastRow {
+        for row in stride(from: firstRow, through: lastRow, by: 1) {
             if row < 0 {
                 continue
             }

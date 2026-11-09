@@ -1457,6 +1457,28 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     private func readingHistory(edge: CGFloat) -> Bool {
         contentOffset.y < edge
     }
+
+    /// Whether the renderers draw rows above the live grid. A frame up to a
+    /// part row taller than its grid rests on the live tail with that part
+    /// row above the grid, where the primary screen would show the newest
+    /// history row over a full-screen program that never wrote it: one that
+    /// stays on the primary screen, as every program over plain mosh does.
+    /// The alternate screen has no rows there, so at rest on the bounds'
+    /// clamp the part row stays blank on both. Any move off the clamp draws
+    /// every row, so a finger scrolling back sees the history row slide in
+    /// rather than a blank strip, and so does a frame whole rows taller than
+    /// a grid that has yet to refit to it.
+    var drawsHistoryAboveGrid: Bool {
+        let gridHeight = CGFloat(terminal.displayBuffer.rows) * cellDimension.height
+        return bounds.height - gridHeight >= cellDimension.height
+            || contentOffset.y < contentSize.height - bounds.height - 0.5
+    }
+
+    /// The first row to draw of those from `firstRow` down.
+    func firstDrawnRow(from firstRow: Int) -> Int {
+        let buffer = terminal.displayBuffer
+        return drawsHistoryAboveGrid ? firstRow : max(firstRow, buffer.lines.count - buffer.rows)
+    }
     
     open func linefeed(source: Terminal) {
         // Output never dismisses a selection; see `feedPrepare`.

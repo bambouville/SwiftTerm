@@ -783,10 +783,13 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         let firstRow = max(0, Int(floor(offsetY / cellHeight)))
         let lastRow = min(buffer.lines.count - 1,
                           Int(floor((offsetY + viewHeight - 1) / cellHeight)))
-        if firstRow > lastRow {
+        // Rows keep their places from `firstRow`; the live tail draws none
+        // above the grid (see `drawsHistoryAboveGrid`).
+        let firstDrawn = terminalView.firstDrawnRow(from: firstRow)
+        if firstDrawn > lastRow {
             return nil
         }
-        return (firstRow, lastRow, firstRow)
+        return (firstDrawn, lastRow, firstRow)
         #else
         let firstRow = buffer.yDisp
         let lastRow = min(buffer.lines.count - 1, buffer.yDisp + buffer.rows - 1)
