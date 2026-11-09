@@ -729,7 +729,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if row < 0 {
             return (Position(col: 0, row: 0), toInt (point))
         }
-        return (Position(col: min (max (0, col), terminal.cols-1), row: row), toInt (point))
+        // The live tail leaves the part row above its grid blank: a touch
+        // there lands on the grid's first row, not on the history it hides.
+        return (Position(col: min (max (0, col), terminal.cols-1), row: firstDrawnRow(from: row)), toInt (point))
     }
 
     func encodeFlags (release: Bool) -> Int
@@ -1474,8 +1476,26 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             || contentOffset.y < contentSize.height - bounds.height - 0.5
     }
 
-    /// The first row to draw of those from `firstRow` down.
-    func firstDrawnRow(from firstRow: Int) -> Int {
+    /// A frame that changes size keeps the grid it has until it no longer
+    /// fits, and UIKit keeps the offset within the new clamp. A frame that
+    /// shrinks by less than the part row above its grid so leaves a reader
+    /// resting on the live tail above the new clamp, where the history row
+    /// shows over a full-screen program again and the grid's last row is cut
+    /// off. Nothing else moves them: no output comes from an idle program.
+    private func settleLiveTailOnClamp() {
+        let gridHeight = CGFloat(terminal.displayBuffer.rows) * cellDimension.height
+        let clamp = contentSize.height - bounds.height
+        guard !isTracking, !isDecelerating, clamp > 0,
+              bounds.height >= gridHeight, bounds.height - gridHeight < cellDimension.height,
+              contentOffset.y < clamp - 0.5, !readingHistory(edge: historyEdgeOffsetY) else {
+            return
+        }
+        contentOffset.y = clamp
+    }
+
+    /// The first row drawn of those from `firstRow` down, for readers of the
+    /// rows on screen as well as the renderers.
+    public func firstDrawnRow(from firstRow: Int) -> Int {
         let buffer = terminal.displayBuffer
         return drawsHistoryAboveGrid ? firstRow : max(firstRow, buffer.lines.count - buffer.rows)
     }
@@ -1638,6 +1658,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if sizeChanged || pendingFontRefit {
             pendingFontRefit = false
             layoutTerminalSizeChanged(to: currentBounds.size)
+        }
+        if sizeChanged {
+            settleLiveTailOnClamp()
         }
 
 #if canImport(MetalKit)

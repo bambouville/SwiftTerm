@@ -565,7 +565,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         let yOffset = ceil(lineDescent + lineLeading)
         let viewWidthPx = terminalView.bounds.width * scale
 
-        let rowInfo = visibleRowRange(buffer: buffer, cellHeight: cellHeight, terminalView: terminalView)
+        let rowInfo = Self.visibleRowRange(buffer: buffer, cellHeight: cellHeight, terminalView: terminalView)
         guard let (firstRow, lastRow, visibleDisp) = rowInfo else {
 #if DEBUG
             debugRowsRebuilt = 0
@@ -766,9 +766,10 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         return lower...upper
     }
 
-    private func visibleRowRange(buffer: Buffer,
-                                 cellHeight: CGFloat,
-                                 terminalView: TerminalView) -> (Int, Int, Int)? {
+    /// The first and last rows to draw and the row placed at the top.
+    static func visibleRowRange(buffer: Buffer,
+                                cellHeight: CGFloat,
+                                terminalView: TerminalView) -> (Int, Int, Int)? {
         guard buffer.lines.count > 0 else {
             return nil
         }
@@ -783,13 +784,15 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         let firstRow = max(0, Int(floor(offsetY / cellHeight)))
         let lastRow = min(buffer.lines.count - 1,
                           Int(floor((offsetY + viewHeight - 1) / cellHeight)))
-        // Rows keep their places from `firstRow`; the live tail draws none
-        // above the grid (see `drawsHistoryAboveGrid`).
+        // Rows sit on whole rows from the top here. The live tail draws none
+        // above the grid (see `drawsHistoryAboveGrid`), so it starts the grid
+        // at the top: placed from `firstRow`, the part row's blank would take
+        // a whole row and still cut the grid's last row to the part row.
         let firstDrawn = terminalView.firstDrawnRow(from: firstRow)
         if firstDrawn > lastRow {
             return nil
         }
-        return (firstDrawn, lastRow, firstRow)
+        return (firstDrawn, lastRow, firstDrawn)
         #else
         let firstRow = buffer.yDisp
         let lastRow = min(buffer.lines.count - 1, buffer.yDisp + buffer.rows - 1)
