@@ -528,21 +528,23 @@ class SelectionService: CustomDebugStringConvertible {
      * no longer overlaps any existing row; a range that is only partially
      * trimmed is clipped to row 0.
      */
-    public func shiftRows (by delta: Int) {
+    public func shiftRows (by delta: Int, keptFrom: Int? = nil) {
         guard active, delta != 0 else { return }
-        let newEndRow = end.row + delta
+        // Rows from `keptFrom` down kept their places (see `Terminal.trimKeepsRowsFrom`).
+        func moved (_ row: Int) -> Int { keptFrom.map { row >= $0 } == true ? row : row + delta }
+        let newEndRow = moved (end.row)
         if newEndRow < 0 {
             selectNone ()
             return
         }
-        var newStart = Position (col: start.col, row: start.row + delta)
+        var newStart = Position (col: start.col, row: moved (start.row))
         if newStart.row < 0 {
             newStart = Position (col: 0, row: 0)
         }
         start = newStart
         end = Position (col: end.col, row: newEndRow)
         if let p = pivot {
-            pivot = Position (col: p.col, row: max (p.row + delta, 0))
+            pivot = Position (col: p.col, row: max (moved (p.row), 0))
         }
     }
 

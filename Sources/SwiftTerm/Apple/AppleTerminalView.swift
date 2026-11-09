@@ -1999,7 +1999,7 @@ extension TerminalView {
         noteSynchronizedTrimmedRows(count)
         #endif
         guard let selection = self.selection, selection.active else { return }
-        selection.shiftRows(by: -count)
+        selection.shiftRows(by: -count, keptFrom: source.trimKeepsRowsFrom)
     }
     
     func feedFinish ()

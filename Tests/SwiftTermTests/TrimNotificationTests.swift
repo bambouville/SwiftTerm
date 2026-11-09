@@ -23,10 +23,36 @@ final class TrimNotificationTests {
         #expect(trimmed > 0, "plain output reports its trims")
         let oldest = t.buffer.lines[0].translateToString(trimRight: true)
 
-        // Rows 1-4 scroll; row 5 stays put.
-        t.feed(text: "\u{1b}[1;4r\u{1b}[4;1H" + "a\nb\nc\n")
+        #expect(d.trimsKeptFrom.allSatisfy { $0 == nil }, "plain output moves every row")
+
+        // Rows 1-4 scroll; row 5, below the margin, keeps its place.
+        t.feed(text: "\u{1b}[5;1HPINNED\u{1b}[1;4r\u{1b}[4;1H" + "a\nb\nc\n")
         #expect(d.trimmedCounts.reduce(0, +) == trimmed + 3)
         #expect(t.buffer.lines[0].translateToString(trimRight: true) != oldest)
+        let pinned = t.buffer.yBase + 4
+        #expect(t.buffer.lines[pinned].translateToString(trimRight: true) == "PINNED")
+        #expect(Array(d.trimsKeptFrom.suffix(3)) == [pinned, pinned, pinned])
+        #expect(t.trimKeepsRowsFrom == nil, "only during the report")
+    }
+
+    /// A selection moves with the rows a trim moved: on a pinned prompt below
+    /// a scroll region it stays, in the region it goes up with the text.
+    @Test func testASelectionKeepsThePinnedRowsAndFollowsTheScrolledOnes() {
+        let (t, _) = TerminalTestHarness.makeTerminal(cols: 10, rows: 5, scrollback: 3)
+        for i in 0..<20 { t.feed(text: "l\(i)\r\n") }
+        #expect(t.buffer.lines.count == 8, "selections clamp to the buffer's rows")
+        let selection = SelectionService(terminal: t)
+        selection.setSelection(start: Position(col: 2, row: 7), end: Position(col: 5, row: 7))
+        selection.shiftRows(by: -1, keptFrom: 7)
+        #expect(selection.start == Position(col: 2, row: 7) && selection.end == Position(col: 5, row: 7))
+
+        selection.setSelection(start: Position(col: 0, row: 4), end: Position(col: 3, row: 7))
+        selection.shiftRows(by: -1, keptFrom: 7)
+        #expect(selection.start == Position(col: 0, row: 3) && selection.end == Position(col: 3, row: 7))
+
+        selection.setSelection(start: Position(col: 0, row: 4), end: Position(col: 3, row: 7))
+        selection.shiftRows(by: -1)
+        #expect(selection.start == Position(col: 0, row: 3) && selection.end == Position(col: 3, row: 6))
     }
 
     /// A resize trims both buffers; the hidden one's trim moves nothing a

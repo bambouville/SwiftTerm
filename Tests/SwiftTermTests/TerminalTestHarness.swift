@@ -5,6 +5,7 @@ final class TerminalTestDelegate: TerminalDelegate {
     private(set) var sentData: [[UInt8]] = []
     private(set) var scrolledYDisps: [Int] = []
     private(set) var trimmedCounts: [Int] = []
+    private(set) var trimsKeptFrom: [Int?] = []
     var cellSizeInPixelsValue: (width: Int, height: Int)? = nil
 
     func showCursor(source: Terminal) {}
@@ -19,6 +20,7 @@ final class TerminalTestDelegate: TerminalDelegate {
     func linefeed(source: Terminal) {}
     func linesTrimmed(source: Terminal, count: Int) {
         trimmedCounts.append(count)
+        trimsKeptFrom.append(source.trimKeepsRowsFrom)
     }
     func bufferActivated(source: Terminal) {}
     func bell(source: Terminal) {}

@@ -333,6 +333,12 @@ open class Terminal {
      */
     public private(set) var buffer: Buffer
 
+    /// During a `linesTrimmed` report, the first row that kept its place:
+    /// a scroll region's bottom margin above the last row drops the oldest
+    /// row while the rows below the margin stay put. Nil when every row
+    /// moved up.
+    public private(set) var trimKeepsRowsFrom: Int?
+
     private let synchronizedOutputTimeoutSeconds: TimeInterval = 1.0
     private var synchronizedOutputActive: Bool = false
     private var synchronizedOutputBuffer: Buffer?
@@ -5335,8 +5341,11 @@ open class Terminal {
                                      change: { line in updateRange (line)})
                 // A full list drops its oldest row to make room, as the
                 // recycle above does (a bottom margin above the last row).
+                // The rows below the margin keep their places.
                 if willBufferBeTrimmed {
+                    trimKeepsRowsFrom = bottomRow + 1
                     tdel?.linesTrimmed (source: self, count: 1)
+                    trimKeepsRowsFrom = nil
                 }
             }
 
