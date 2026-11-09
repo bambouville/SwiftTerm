@@ -2391,9 +2391,9 @@ open class Terminal {
             updateRange (j)
             // Deleted front part of line and everything before. This line will no longer be wrapped.
             eraseInBufferLine (y: j, start: 0, end: buffer.x + 1, clearWrap: true)
-            if buffer.x + 1 >= cols {
+            if buffer.x + 1 >= cols && j + 1 < rows {
                 // Deleted entire previous line. This next line can no longer be wrapped.
-                buffer.lines [j + 1].isWrapped = false
+                buffer.lines [buffer.yBase + j + 1].isWrapped = false
             }
             while (j != 0) {
                 j -= 1
@@ -5316,6 +5316,10 @@ open class Terminal {
             if bottomRow == lines.count - 1 {
                 if willBufferBeTrimmed {
                     lines.recycle (clearAttribute: eraseAttr())
+                    // The recycled row was the oldest one: it takes the new
+                    // row's wrap flag and rendering, not its own.
+                    lines [bottomRow].isWrapped = isWrapped
+                    lines [bottomRow].renderMode = .single
                     tdel?.linesTrimmed (source: self, count: 1)
                 } else {
                     lines.push (BufferLine (from: newLine))
