@@ -6076,6 +6076,31 @@ open class Terminal {
         return linkMatch(at: location, mode: mode)?.text
     }
 
+    /// The text around a location, for a caller that looks for links in it
+    /// itself: the rows of its logical line joined as implicit detection
+    /// joins them, and where the location falls in them.
+    public struct LinkLineContext {
+        public let text: String
+        /// Characters of `text` before the one under the location.
+        public let offset: Int
+        /// The line goes on before or after `text`, which holds only the
+        /// rows near the location.
+        public let truncatedStart: Bool
+        public let truncatedEnd: Bool
+    }
+
+    public func linkLineContext(at location: LinkLookupLocation) -> LinkLineContext?
+    {
+        let buffer = displayBuffer
+        guard let position = resolveLinkLocation(location, in: buffer),
+              let lineMap = buildGhosttyImplicitLineMap(at: position, in: buffer)
+        else {
+            return nil
+        }
+        return LinkLineContext(text: lineMap.text, offset: lineMap.targetOffset,
+                               truncatedStart: lineMap.truncatedStart, truncatedEnd: lineMap.truncatedEnd)
+    }
+
     func getDisplayText (start: Position, end: Position) -> String
     {
         getText(start: start, end: end, buffer: displayBuffer)
@@ -6176,81 +6201,231 @@ open class Terminal {
         guard let lineMap = buildGhosttyImplicitLineMap(at: position, in: buffer) else {
             return nil
         }
-        guard let regex = Self.ghosttyImplicitLinkRegex else {
+        guard let textRange = implicitLinkRange(in: lineMap) else {
+            return nil
+        }
+        let startOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.lowerBound)
+        let endOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.upperBound)
+        guard startOffset < lineMap.cells.count else {
+            return nil
+        }
+        let boundedEndOffset = min(endOffset, lineMap.cells.count)
+        guard boundedEndOffset > startOffset else {
             return nil
         }
 
-        let searchRange = NSRange(lineMap.text.startIndex..<lineMap.text.endIndex, in: lineMap.text)
-        let matches = regex.matches(in: lineMap.text, options: [], range: searchRange)
-        for match in matches {
-            guard match.range.length > 0,
-                  let textRange = Range(match.range, in: lineMap.text)
-            else {
-                continue
-            }
-            if suppressGhosttyLikeMatch(textRange, in: lineMap.text) {
-                continue
-            }
+        var containsTarget = false
+        var rowStart: Int?
+        var rowEnd: Int?
+        var rowBounds: [Int: (start: Int, end: Int)] = [:]
+        for idx in startOffset..<boundedEndOffset {
+            let cell = lineMap.cells[idx]
+            let cellEnd = cell.col + max(1, cell.width)
 
-            let startOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.lowerBound)
-            let endOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.upperBound)
-            guard startOffset < lineMap.cells.count else {
-                continue
-            }
-            let boundedEndOffset = min(endOffset, lineMap.cells.count)
-            guard boundedEndOffset > startOffset else {
-                continue
+            if var bounds = rowBounds[cell.row] {
+                bounds.start = min(bounds.start, cell.col)
+                bounds.end = max(bounds.end, cellEnd)
+                rowBounds[cell.row] = bounds
+            } else {
+                rowBounds[cell.row] = (start: cell.col, end: cellEnd)
             }
 
-            var containsTarget = false
-            var rowStart: Int?
-            var rowEnd: Int?
-            var rowBounds: [Int: (start: Int, end: Int)] = [:]
-            for idx in startOffset..<boundedEndOffset {
-                let cell = lineMap.cells[idx]
-                let cellEnd = cell.col + max(1, cell.width)
-
-                if var bounds = rowBounds[cell.row] {
-                    bounds.start = min(bounds.start, cell.col)
-                    bounds.end = max(bounds.end, cellEnd)
-                    rowBounds[cell.row] = bounds
-                } else {
-                    rowBounds[cell.row] = (start: cell.col, end: cellEnd)
-                }
-
-                if cell.row == lineMap.targetRow {
-                    rowStart = min(rowStart ?? cell.col, cell.col)
-                    rowEnd = max(rowEnd ?? cellEnd, cellEnd)
-                    if lineMap.targetCol >= cell.col && lineMap.targetCol < cellEnd {
-                        containsTarget = true
-                    }
+            if cell.row == lineMap.targetRow {
+                rowStart = min(rowStart ?? cell.col, cell.col)
+                rowEnd = max(rowEnd ?? cellEnd, cellEnd)
+                if lineMap.targetCol >= cell.col && lineMap.targetCol < cellEnd {
+                    containsTarget = true
                 }
             }
-            guard containsTarget,
-                  let rowStart,
-                  let rowEnd,
-                  rowStart < rowEnd
-            else {
-                continue
+        }
+        guard containsTarget,
+              let rowStart,
+              let rowEnd,
+              rowStart < rowEnd
+        else {
+            return nil
+        }
+
+        let rowRanges = rowBounds
+            .keys
+            .sorted()
+            .compactMap { row -> LinkMatch.RowRange? in
+                guard let bounds = rowBounds[row], bounds.start < bounds.end else {
+                    return nil
+                }
+                return .init(row: row, range: bounds.start..<bounds.end)
             }
 
-            let rowRanges = rowBounds
-                .keys
-                .sorted()
-                .compactMap { row -> LinkMatch.RowRange? in
-                    guard let bounds = rowBounds[row], bounds.start < bounds.end else {
-                        return nil
-                    }
-                    return .init(row: row, range: bounds.start..<bounds.end)
-                }
+        return LinkMatch(
+            text: String(lineMap.text[textRange]),
+            row: lineMap.targetRow,
+            range: rowStart..<rowEnd,
+            isExplicit: false,
+            rowRanges: rowRanges
+        )
+    }
 
-            return LinkMatch(
-                text: String(lineMap.text[textRange]),
-                row: lineMap.targetRow,
-                range: rowStart..<rowEnd,
-                isExplicit: false,
-                rowRanges: rowRanges
-            )
+    /// The link under the target, as a range of the joined text.
+    ///
+    /// Two passes, each with a bound on its work. URLs first, over everything
+    /// joined: that pattern is linear, so a URL of a couple of thousand
+    /// characters is still found. Paths second, over the few hundred
+    /// characters around the target between the URLs on either side: their
+    /// pattern rescans a run of path characters from each of its positions,
+    /// which is the square of the run. A URL therefore wins over a path that
+    /// would have swallowed it.
+    private func implicitLinkRange(in lineMap: GhosttyImplicitLineMap) -> Range<String.Index>?
+    {
+        guard let urls = Self.ghosttyImplicitURLRegex, let links = Self.ghosttyImplicitLinkRegex else {
+            return nil
+        }
+        let text = lineMap.text
+        let target = text.index(text.startIndex, offsetBy: lineMap.targetOffset)
+        var gapStart = text.startIndex
+        var gapEnd = text.endIndex
+        let whole = NSRange(text.startIndex..<text.endIndex, in: text)
+        for match in urls.matches(in: text, options: [], range: whole) {
+            guard match.range.length > 0, let found = Range(match.range, in: text) else {
+                continue
+            }
+            if found.upperBound <= target {
+                gapStart = found.upperBound
+                continue
+            }
+            if found.lowerBound > target {
+                gapEnd = found.lowerBound
+                break
+            }
+            // Its other end may lie outside the window; so may the start of
+            // a longer URL that this one is only the tail of.
+            if lineMap.truncatedEnd && found.upperBound == text.endIndex {
+                return nil
+            }
+            if lineMap.truncatedStart && Self.implicitLinkBody(in: text, reachesStartFrom: found.lowerBound) {
+                return nil
+            }
+            return suppressGhosttyLikeMatch(found, in: text) ? nil : found
+        }
+
+        // The path pass starts and ends where no link can span: its matches
+        // there are the ones a scan of the whole line would find.
+        var start = gapStart
+        var end = gapEnd
+        var refusedStart: String.Index?
+        var refusedEnd: String.Index?
+        let reach = Self.implicitPathWindowCharacters
+        if let nominal = text.index(target, offsetBy: -reach, limitedBy: gapStart), nominal > gapStart {
+            guard let cut = Self.implicitLinkBreak(in: text, from: nominal, to: target, forward: true) else {
+                return nil
+            }
+            start = cut.index
+            refusedStart = cut.certain ? nil : cut.index
+        } else if gapStart == text.startIndex && lineMap.truncatedStart {
+            guard let cut = Self.implicitLinkBreak(in: text, from: gapStart, to: target, forward: true) else {
+                return nil
+            }
+            start = cut.index
+            refusedStart = cut.certain ? nil : cut.index
+        }
+        let afterTarget = text.index(after: target)
+        if let nominal = text.index(target, offsetBy: reach, limitedBy: gapEnd), nominal < gapEnd {
+            guard let cut = Self.implicitLinkBreak(in: text, from: nominal, to: afterTarget, forward: false) else {
+                return nil
+            }
+            end = cut.index
+            refusedEnd = cut.certain ? nil : cut.index
+        } else if gapEnd == text.endIndex && lineMap.truncatedEnd {
+            guard let cut = Self.implicitLinkBreak(in: text, from: gapEnd, to: afterTarget, forward: false) else {
+                return nil
+            }
+            end = cut.index
+            refusedEnd = cut.certain ? nil : cut.index
+        }
+        guard start < end else {
+            return nil
+        }
+        // Lookbehinds and `$` still see the text outside the range.
+        let options: NSRegularExpression.MatchingOptions = [.withTransparentBounds, .withoutAnchoringBounds]
+        for match in links.matches(in: text, options: options, range: NSRange(start..<end, in: text)) {
+            guard match.range.length > 0, let found = Range(match.range, in: text) else {
+                continue
+            }
+            if found.upperBound <= target {
+                continue
+            }
+            if found.lowerBound > target {
+                break
+            }
+            // A path with spaces in it may have begun before a start that is
+            // only a space, or run on past such an end.
+            if found.lowerBound == refusedStart || found.upperBound == refusedEnd {
+                return nil
+            }
+            return suppressGhosttyLikeMatch(found, in: text) ? nil : found
+        }
+        return nil
+    }
+
+    /// Whether the characters before `index` could all belong to one URL
+    /// that began before the text did.
+    private static func implicitLinkBody(in text: String, reachesStartFrom index: String.Index) -> Bool
+    {
+        var cursor = index
+        while cursor > text.startIndex {
+            let previous = text.index(before: cursor)
+            if text[previous] == " " || isImplicitLinkBreak(text[previous]) {
+                return false
+            }
+            cursor = previous
+        }
+        return true
+    }
+
+    /// No URL or path in the pattern contains one of these.
+    private static func isImplicitLinkBreak(_ character: Character) -> Bool
+    {
+        switch character {
+        case "\"", "'", "<", ">", "{", "}", "|", "\\", "^", "`":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The nearest place to `from`, looking towards `to`, where a scan can
+    /// start (`forward`) or stop. It is `certain` at a character no link
+    /// contains and at a run of spaces; a single space may join two parts of
+    /// one path.
+    private static func implicitLinkBreak(in text: String, from: String.Index, to: String.Index,
+                                          forward: Bool) -> (index: String.Index, certain: Bool)?
+    {
+        func certain(_ index: String.Index) -> Bool {
+            if text[index] != " " {
+                return true
+            }
+            let next = text.index(after: index)
+            if next < text.endIndex && text[next] == " " {
+                return true
+            }
+            return index > text.startIndex && text[text.index(before: index)] == " "
+        }
+        if forward {
+            var cursor = from
+            while cursor < to {
+                if text[cursor] == " " || isImplicitLinkBreak(text[cursor]) {
+                    return (text.index(after: cursor), certain(cursor))
+                }
+                cursor = text.index(after: cursor)
+            }
+            return nil
+        }
+        var cursor = from
+        while cursor > to {
+            let previous = text.index(before: cursor)
+            if text[previous] == " " || isImplicitLinkBreak(text[previous]) {
+                return (previous, certain(previous))
+            }
+            cursor = previous
         }
         return nil
     }
@@ -6290,6 +6465,20 @@ open class Terminal {
         let cells: [GhosttyImplicitCellRef]
         let targetRow: Int
         let targetCol: Int
+        /// The target cell's place in `text` and `cells`.
+        let targetOffset: Int
+        /// The joined rows stop at the window, not at the line's own ends.
+        let truncatedStart: Bool
+        let truncatedEnd: Bool
+    }
+
+    /// Characters of a logical line joined on each side of the looked-up row.
+    static let implicitLinkWindowCharacters = 2048
+    /// Characters on each side of the target that the path patterns see.
+    static let implicitPathWindowCharacters = 256
+
+    static func implicitLinkRowBudget(cols: Int) -> Int {
+        max(1, implicitLinkWindowCharacters / max(1, cols))
     }
 
     private struct LinkRowEdgeInfo {
@@ -6302,12 +6491,23 @@ open class Terminal {
     // Ghostty-style URL/path pattern adapted for ICU regex.
     // Oniguruma uses a variable-length lookbehind in one branch; we keep
     // compatibility by applying an equivalent post-match suppression rule.
-    private static let ghosttyImplicitLinkRegex: NSRegularExpression? = {
+    private static let ghosttyImplicitLinkRegex = ghosttyImplicitRegexes.links
+    private static let ghosttyImplicitURLRegex = ghosttyImplicitRegexes.urls
+
+    private static let ghosttyImplicitRegexes: (urls: NSRegularExpression?, links: NSRegularExpression?) = {
         let urlSchemes = #"https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:"#
-        let ipv6URLPattern = #"(?:\[[:0-9a-fA-F]+(?:[:0-9a-fA-F]*)+\](?::[0-9]+)?)"#
+        // Terminal output is hostile input. No quantified group here may be
+        // able to match one run of text in more than one way: Ghostty's
+        // `X+(?:X*)+` and `(?:X+suffix?)+` forms backtrack exponentially on
+        // "https://" followed by a few dozen periods, on the main thread.
+        let ipv6URLPattern = #"(?:\[[:0-9a-fA-F]+\](?::[0-9]+)?)"#
         let schemeURLChars = #"[\w\-.~:/?#@!$&*+,;=%]"#
         let pathChars = #"[\w\-.~:\/?#@!$&*+;=%]"#
-        let optionalBracketedWordSuffix = #"(?:[\(\[]\w*[\)\]])?"#
+        // One character per turn of the group. A bracketed word still has
+        // to follow a URL character, as it did after `chars+`, and cannot
+        // open the URL. (One follows an IPv6 port now, which `chars+` after
+        // the port's own digits used to rule out.)
+        let bracketedWordSuffix = #"(?<=[\w\-.~:/?#@!$&*+,;=%])[\(\[]\w*[\)\]]"#
         let noTrailingPunctuation = #"(?<![,.])"#
         let noTrailingColon = #"(?<!:)"#
         let trailingSpacesAtEOL = #"(?: +(?= *$))?"#
@@ -6318,7 +6518,8 @@ open class Terminal {
 
         let schemeURLBranch =
             "(?:" + urlSchemes + ")" +
-            "(?:" + ipv6URLPattern + "|" + schemeURLChars + "+" + optionalBracketedWordSuffix + ")+" +
+            "(?:" + ipv6URLPattern + "|" + schemeURLChars + ")" +
+            "(?:" + ipv6URLPattern + "|" + schemeURLChars + "|" + bracketedWordSuffix + ")*" +
             noTrailingPunctuation
 
         let rootedOrRelativePathPrefix = #"(?:\.\.\/|\.\/|(?<!\w)~\/|(?:[\w][\w\-.]*\/)*(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))"#
@@ -6350,7 +6551,8 @@ open class Terminal {
             trailingSpacesAtEOL
 
         let regex = schemeURLBranch + "|" + rootedOrRelativePathBranch + "|" + bareRelativePathBranch
-        return try? NSRegularExpression(pattern: regex, options: [])
+        return (try? NSRegularExpression(pattern: schemeURLBranch, options: []),
+                try? NSRegularExpression(pattern: regex, options: []))
     }()
 
     private static let ghosttyContinuationCharacters = CharacterSet(
@@ -6375,25 +6577,41 @@ open class Terminal {
             targetCol -= 1
         }
 
+        // A logical line can be megabytes long (a minified file, a base64
+        // blob), and the pattern's lookaheads cost the square of what they
+        // scan. Join only the rows near the target, and say when that cut a
+        // line short so a link running off the window is refused, not opened
+        // truncated.
+        let rowBudget = Self.implicitLinkRowBudget(cols: cols)
         var startRow = targetRow
-        while startRow > 0 && buffer.lines[startRow].isWrapped {
+        while startRow > 0 && buffer.lines[startRow].isWrapped && targetRow - startRow < rowBudget {
             startRow -= 1
         }
         var endRow = targetRow
-        while endRow + 1 < buffer.lines.count && buffer.lines[endRow + 1].isWrapped {
+        while endRow + 1 < buffer.lines.count && buffer.lines[endRow + 1].isWrapped && endRow - targetRow < rowBudget {
             endRow += 1
         }
+        var joinedByHeuristic = false
         if startRow == targetRow && endRow == targetRow,
-           let (heuristicStart, heuristicEnd) = heuristicImplicitGroup(around: targetRow, in: buffer)
+           let (heuristicStart, heuristicEnd) = heuristicImplicitGroup(around: targetRow, in: buffer, rowBudget: rowBudget)
         {
             startRow = heuristicStart
             endRow = heuristicEnd
+            joinedByHeuristic = true
         }
+        // Either loop stops on a row that would still have joined only when
+        // the budget stopped it.
+        let truncatedStart = startRow > 0 && (joinedByHeuristic
+            ? canJoinImplicitRows(upper: startRow - 1, lower: startRow, in: buffer)
+            : buffer.lines[startRow].isWrapped)
+        let truncatedEnd = endRow + 1 < buffer.lines.count && (joinedByHeuristic
+            ? canJoinImplicitRows(upper: endRow, lower: endRow + 1, in: buffer)
+            : buffer.lines[endRow + 1].isWrapped)
 
         var text = ""
         var cells: [GhosttyImplicitCellRef] = []
         cells.reserveCapacity((endRow - startRow + 1) * cols)
-        var targetIsInsideTrimmedContent = false
+        var targetOffset: Int?
 
         for row in startRow...endRow {
             let line = buffer.lines[row]
@@ -6405,18 +6623,27 @@ open class Terminal {
             if lineLimit <= 0 {
                 continue
             }
+            // Indentation is dropped from a continuation row (a program that
+            // broke the line itself and indented the rest), except where the
+            // terminal wrapped a row it had filled to the last column. That
+            // row continues exactly where the one above stopped, so a space
+            // at its start is a real space: `…/path` at the right edge
+            // followed by ` next` must not read `…/pathnext`.
             let isContinuationRow = isImplicitContinuationRow(row, startRow: startRow, in: buffer)
-            let startCol = isContinuationRow ? firstNonWhitespaceColumn(in: line, lineLimit: lineLimit) : 0
+            let continuesAFullRow = line.isWrapped && row > 0
+                && buffer.lines[row - 1].getTrimmedLength() >= cols
+            let startCol = isContinuationRow && !continuesAFullRow
+                ? firstNonWhitespaceColumn(in: line, lineLimit: lineLimit)
+                : 0
             guard startCol < lineLimit else {
                 continue
             }
-            if row == targetRow && targetCol >= startCol && targetCol < lineLimit {
-                targetIsInsideTrimmedContent = true
-            }
-
             for col in startCol..<lineLimit {
                 if col > 0 && line[col].code == 0 && line[col - 1].width == 2 {
                     continue
+                }
+                if row == targetRow && col == targetCol {
+                    targetOffset = cells.count
                 }
                 let cell = line[col]
                 var character = getCharacter(for: cell)
@@ -6434,7 +6661,7 @@ open class Terminal {
             }
         }
 
-        guard !text.isEmpty, !cells.isEmpty, targetIsInsideTrimmedContent else {
+        guard !text.isEmpty, !cells.isEmpty, let targetOffset else {
             return nil
         }
 
@@ -6442,7 +6669,10 @@ open class Terminal {
             text: text,
             cells: cells,
             targetRow: targetRow,
-            targetCol: targetCol
+            targetCol: targetCol,
+            targetOffset: targetOffset,
+            truncatedStart: truncatedStart,
+            truncatedEnd: truncatedEnd
         )
     }
 
@@ -6457,15 +6687,16 @@ open class Terminal {
         return canJoinImplicitRows(upper: row - 1, lower: row, in: buffer)
     }
 
-    private func heuristicImplicitGroup(around row: Int, in buffer: Buffer) -> (start: Int, end: Int)?
+    private func heuristicImplicitGroup(around row: Int, in buffer: Buffer, rowBudget: Int) -> (start: Int, end: Int)?
     {
         var start = row
         var end = row
 
-        while start > 0 && canJoinImplicitRows(upper: start - 1, lower: start, in: buffer) {
+        while start > 0 && row - start < rowBudget && canJoinImplicitRows(upper: start - 1, lower: start, in: buffer) {
             start -= 1
         }
-        while end + 1 < buffer.lines.count && canJoinImplicitRows(upper: end, lower: end + 1, in: buffer) {
+        while end + 1 < buffer.lines.count && end - row < rowBudget
+                && canJoinImplicitRows(upper: end, lower: end + 1, in: buffer) {
             end += 1
         }
 
