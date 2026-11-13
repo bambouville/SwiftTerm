@@ -6077,12 +6077,16 @@ open class Terminal {
     }
 
     /// The text around a location, for a caller that looks for links in it
-    /// itself: the rows of its logical line joined as implicit detection
-    /// joins them, and where the location falls in them.
+    /// itself: the rows the terminal wrapped into its logical line, and where
+    /// the location falls in them. Rows a program broke itself are separate
+    /// lines here: the guess that joins those for a pointer is not made.
     public struct LinkLineContext {
         public let text: String
-        /// Characters of `text` before the one under the location.
-        public let offset: Int
+        /// Unicode scalars of `text` before those of the cell under the
+        /// location. Scalars, not Characters: two cells can join into one
+        /// Character (a pair of regional indicators, a combining mark left
+        /// in a cell of its own), so Characters do not count cells.
+        public let scalarOffset: Int
         /// The line goes on before or after `text`, which holds only the
         /// rows near the location.
         public let truncatedStart: Bool
@@ -6093,11 +6097,11 @@ open class Terminal {
     {
         let buffer = displayBuffer
         guard let position = resolveLinkLocation(location, in: buffer),
-              let lineMap = buildGhosttyImplicitLineMap(at: position, in: buffer)
+              let lineMap = buildGhosttyImplicitLineMap(at: position, in: buffer, softWrapsOnly: true)
         else {
             return nil
         }
-        return LinkLineContext(text: lineMap.text, offset: lineMap.targetOffset,
+        return LinkLineContext(text: lineMap.text, scalarOffset: lineMap.targetScalarOffset,
                                truncatedStart: lineMap.truncatedStart, truncatedEnd: lineMap.truncatedEnd)
     }
 
@@ -6204,13 +6208,10 @@ open class Terminal {
         guard let textRange = implicitLinkRange(in: lineMap) else {
             return nil
         }
-        let startOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.lowerBound)
-        let endOffset = lineMap.text.distance(from: lineMap.text.startIndex, to: textRange.upperBound)
-        guard startOffset < lineMap.cells.count else {
-            return nil
-        }
-        let boundedEndOffset = min(endOffset, lineMap.cells.count)
-        guard boundedEndOffset > startOffset else {
+        let scalars = lineMap.text.unicodeScalars
+        let startScalar = scalars.distance(from: scalars.startIndex, to: textRange.lowerBound)
+        let endScalar = scalars.distance(from: scalars.startIndex, to: textRange.upperBound)
+        guard endScalar > startScalar else {
             return nil
         }
 
@@ -6218,8 +6219,7 @@ open class Terminal {
         var rowStart: Int?
         var rowEnd: Int?
         var rowBounds: [Int: (start: Int, end: Int)] = [:]
-        for idx in startOffset..<boundedEndOffset {
-            let cell = lineMap.cells[idx]
+        for cell in lineMap.cells where cell.scalarStart < endScalar && cell.scalarEnd > startScalar {
             let cellEnd = cell.col + max(1, cell.width)
 
             if var bounds = rowBounds[cell.row] {
@@ -6280,7 +6280,16 @@ open class Terminal {
             return nil
         }
         let text = lineMap.text
-        let target = text.index(text.startIndex, offsetBy: lineMap.targetOffset)
+        let scalars = text.unicodeScalars
+        guard let inside = scalars.index(scalars.startIndex, offsetBy: lineMap.targetScalarOffset, limitedBy: scalars.endIndex),
+              inside < text.endIndex
+        else {
+            return nil
+        }
+        // The Character that holds the target cell's scalars. Cells that
+        // joined into one Character share it, so it is found from the scalar
+        // and never by counting cells.
+        let target = text.index(before: text.index(after: inside))
         var gapStart = text.startIndex
         var gapEnd = text.endIndex
         let whole = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -6458,6 +6467,10 @@ open class Terminal {
         let row: Int
         let col: Int
         let width: Int
+        /// The cell's own scalars in the joined text, as offsets in its
+        /// unicode scalars.
+        let scalarStart: Int
+        let scalarEnd: Int
     }
 
     private struct GhosttyImplicitLineMap {
@@ -6465,8 +6478,10 @@ open class Terminal {
         let cells: [GhosttyImplicitCellRef]
         let targetRow: Int
         let targetCol: Int
-        /// The target cell's place in `text` and `cells`.
-        let targetOffset: Int
+        /// Unicode scalars of `text` before the target cell's own. A cell is
+        /// located in the text by scalars only: the text can hold fewer
+        /// Characters than there are cells.
+        let targetScalarOffset: Int
         /// The joined rows stop at the window, not at the line's own ends.
         let truncatedStart: Bool
         let truncatedEnd: Bool
@@ -6559,7 +6574,7 @@ open class Terminal {
         charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&*+,;=%()"
     )
 
-    private func buildGhosttyImplicitLineMap(at position: Position, in buffer: Buffer) -> GhosttyImplicitLineMap?
+    private func buildGhosttyImplicitLineMap(at position: Position, in buffer: Buffer, softWrapsOnly: Bool = false) -> GhosttyImplicitLineMap?
     {
         guard position.row >= 0 && position.row < buffer.lines.count else {
             return nil
@@ -6592,7 +6607,7 @@ open class Terminal {
             endRow += 1
         }
         var joinedByHeuristic = false
-        if startRow == targetRow && endRow == targetRow,
+        if !softWrapsOnly, startRow == targetRow && endRow == targetRow,
            let (heuristicStart, heuristicEnd) = heuristicImplicitGroup(around: targetRow, in: buffer, rowBudget: rowBudget)
         {
             startRow = heuristicStart
@@ -6611,7 +6626,8 @@ open class Terminal {
         var text = ""
         var cells: [GhosttyImplicitCellRef] = []
         cells.reserveCapacity((endRow - startRow + 1) * cols)
-        var targetOffset: Int?
+        var targetScalarOffset: Int?
+        var scalarCount = 0
 
         for row in startRow...endRow {
             let line = buffer.lines[row]
@@ -6643,7 +6659,7 @@ open class Terminal {
                     continue
                 }
                 if row == targetRow && col == targetCol {
-                    targetOffset = cells.count
+                    targetScalarOffset = scalarCount
                 }
                 let cell = line[col]
                 var character = getCharacter(for: cell)
@@ -6651,17 +6667,21 @@ open class Terminal {
                     character = " "
                 }
                 text.append(character)
+                let scalarStart = scalarCount
+                scalarCount += character.unicodeScalars.count
                 cells.append(
                     GhosttyImplicitCellRef(
                         row: row,
                         col: col,
-                        width: max(1, Int(cell.width))
+                        width: max(1, Int(cell.width)),
+                        scalarStart: scalarStart,
+                        scalarEnd: scalarCount
                     )
                 )
             }
         }
 
-        guard !text.isEmpty, !cells.isEmpty, let targetOffset else {
+        guard !text.isEmpty, !cells.isEmpty, let targetScalarOffset else {
             return nil
         }
 
@@ -6670,7 +6690,7 @@ open class Terminal {
             cells: cells,
             targetRow: targetRow,
             targetCol: targetCol,
-            targetOffset: targetOffset,
+            targetScalarOffset: targetScalarOffset,
             truncatedStart: truncatedStart,
             truncatedEnd: truncatedEnd
         )

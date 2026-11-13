@@ -238,7 +238,7 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
         let index = text.distance(from: text.startIndex, to: text.range(of: "ghij")!.lowerBound)
         let context = terminal.linkLineContext(at: .buffer(Position(col: index % cols, row: index / cols)))
         #expect(context?.text == text)
-        #expect(context?.offset == index)
+        #expect(context?.scalarOffset == index)
         #expect(context?.truncatedStart == false)
         #expect(context?.truncatedEnd == false)
         #expect(terminal.linkLineContext(at: .buffer(Position(col: 15, row: 3)))?.text == nil)
@@ -258,6 +258,56 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
             == "https://example.com/abcdefghijklmnop")
         #expect(wrappedLink(in: "see https://example.com/abcdefghijklmnop now", at: "ghij", columns: 20)
             == "https://example.com/abcdefghijklmnop")
+    }
+
+    // Two cells can join into one Character: regional indicators written
+    // into separate cells make one flag in the joined text, which then holds
+    // fewer Characters than the row has cells. A lookup after them used to
+    // count cells as Characters and ran off the end of the text.
+    @Test func testCellsThatJoinIntoOneCharacterDoNotMisplaceTheLookup() {
+        let pair = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 2, scrollback: 0))
+        // Flag half at columns 0-1, x at 2, then the other half written over x.
+        pair.feed(text: "\u{1F1E6}x\u{1B}[3G\u{1F1E7}z")
+        for col in 0..<8 {
+            #expect(pair.link(at: .buffer(Position(col: col, row: 0)), mode: .explicitAndImplicit) == nil)
+        }
+
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 2, scrollback: 0))
+        terminal.feed(text: "\u{1F1E6}x\u{1B}[3G\u{1F1E7} https://example.com/abc now")
+        // Columns: flag halves at 0-1 and 2-3, a space at 4, the URL at 5...
+        let first = 5, last = 5 + "https://example.com/abc".count - 1
+        for col in [first, first + 9, last] {
+            #expect(terminal.link(at: .buffer(Position(col: col, row: 0)), mode: .explicitAndImplicit)
+                == "https://example.com/abc")
+        }
+        #expect(terminal.link(at: .buffer(Position(col: last + 1, row: 0)), mode: .explicitAndImplicit) == nil)
+
+        // The context says where the cell is in scalars, which joining cannot move.
+        let context = terminal.linkLineContext(at: .buffer(Position(col: last, row: 0)))
+        let scalars = Array((context?.text ?? "").unicodeScalars)
+        #expect(context.map { $0.scalarOffset < scalars.count && scalars[$0.scalarOffset] == "c" } == true)
+        #expect(context.map { String(String.UnicodeScalarView(scalars[..<$0.scalarOffset])).hasSuffix("https://example.com/ab") } == true)
+    }
+
+    // A caller that looks for links itself gets the rows the terminal
+    // wrapped, never rows a program ended: the pointer's guess that an
+    // indented or right-edge row continues the one above would otherwise
+    // build `https://good.example.evil.example/` out of two lines.
+    @Test func testLinkLineContextStopsAtAHardNewline() {
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 4, scrollback: 0))
+        let lead = String(repeating: " ", count: 50)
+        terminal.feed(text: lead + "https://good.example\r\n.evil.example/\r\n")
+        let context = terminal.linkLineContext(at: .buffer(Position(col: 60, row: 0)))
+        #expect(context?.text == lead + "https://good.example")
+        #expect(context?.truncatedStart == false)
+        #expect(context?.truncatedEnd == false)
+        #expect(terminal.linkLineContext(at: .buffer(Position(col: 3, row: 1)))?.text == ".evil.example/")
+
+        // A row filled to the last column and continued by the program
+        // itself is two lines as well.
+        let full = Terminal(delegate: self, options: TerminalOptions(cols: 30, rows: 4, scrollback: 0))
+        full.feed(text: "see https://example.com/abcdef\r\nghij\r\n")
+        #expect(full.linkLineContext(at: .buffer(Position(col: 10, row: 0)))?.text == "see https://example.com/abcdef")
     }
 
     // A URL is looked for first, so a path can no longer swallow one.
