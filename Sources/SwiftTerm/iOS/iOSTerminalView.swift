@@ -584,6 +584,18 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// targeting iOS 16+ build them without deprecation warnings.
     public var additionalMenuCommands: [UICommand] = []
 
+    /// Commands captured at the start of the existing long press, ahead of
+    /// standard selection actions. The position uses the displayed buffer.
+    public var menuCommandsForLongPress: ((Position) -> [UICommand])?
+    private var pendingLongPressCommands: [UICommand] = []
+    private var leadingMenuCommands: [UICommand] = []
+
+    /// Convert scroll-view content coordinates with the active renderer's
+    /// placement, including scrollback and synchronized-output snapshots.
+    public func cellPosition(at point: CGPoint) -> Position {
+        calculateTapHit(point: point).grid
+    }
+
     /// Backing store for the iOS 16+ edit-menu interaction. Typed `Any`
     /// so the stored property needs no availability gate.
     private var _editMenuInteraction: Any? = nil
@@ -593,7 +605,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     ///  - region: This is the location that we want to avoid having the menu being shown
     ///  - pos: the location where this was triggered in the buffer, it used at a later point
     ///  to auto-select a word
-    func showContextMenu (forRegion: CGRect, pos: Position) {
+    func showContextMenu (forRegion: CGRect, pos: Position, leadingCommands: [UICommand] = []) {
+        leadingMenuCommands = leadingCommands
         lastLongSelect = pos
         lastLongSelectRegion = forRegion
 
@@ -615,7 +628,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             interaction.presentEditMenu(with: configuration)
         } else {
             let menuController = UIMenuController.shared
-            menuController.menuItems = additionalMenuCommands.map {
+            menuController.menuItems = (leadingMenuCommands + additionalMenuCommands).map {
                 UIMenuItem(title: $0.title, action: $0.action)
             }
             menuController.showMenu(from: self, rect: forRegion)
@@ -670,15 +683,20 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
              let _ = self.becomeFirstResponder()
              let tapLocation = gestureRecognizer.location(in: gestureRecognizer.view)
              lastLongSelectRegion = makeContextMenuRegionForTap (point: tapLocation)
-             lastLongSelect = calculateTapHit (gesture: gestureRecognizer).grid
+             let position = calculateTapHit (gesture: gestureRecognizer).grid
+             lastLongSelect = position
+             pendingLongPressCommands = menuCommandsForLongPress?(position) ?? []
           } else if gestureRecognizer.state == .ended {
              // Present on lift, not on .began: UIEditMenuInteraction (unlike
              // the defunct UIMenuController) tracks live touches, and the
              // long-press touch-up transition dismisses a menu that was
              // presented while the finger was still down.
              if let pos = lastLongSelect {
-                 showContextMenu (forRegion: lastLongSelectRegion, pos: pos)
+                 showContextMenu (forRegion: lastLongSelectRegion, pos: pos, leadingCommands: pendingLongPressCommands)
              }
+             pendingLongPressCommands = []
+          } else if gestureRecognizer.state == .cancelled || gestureRecognizer.state == .failed {
+             pendingLongPressCommands = []
           }
     }
     
@@ -2922,7 +2940,8 @@ extension TerminalView: UIEditMenuInteractionDelegate {
         // the same chain (hosts implement them on an ancestor view).
         // Fresh copies per presentation, as each menu used to build its own.
         let extras = additionalMenuCommands.compactMap { $0.copy() as? UIMenuElement }
-        return UIMenu(children: suggestedActions + extras)
+        let leading = leadingMenuCommands.compactMap { $0.copy() as? UIMenuElement }
+        return UIMenu(children: leading + suggestedActions + extras)
     }
 
     public func editMenuInteraction (
