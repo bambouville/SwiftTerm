@@ -6095,6 +6095,25 @@ open class Terminal {
         public let truncatedEnd: Bool
     }
 
+    /// Cells and row geometry from the same snapshot used by touch hit-testing.
+    public struct LinkRowContext {
+        public let cells: [CharData]
+        public let isWrapped: Bool
+        public let screenStartRow: Int
+        public let rowCount: Int
+    }
+
+    /// Buffer-relative coordinates, including scrollback. Reading live rows
+    /// here would expose text hidden by synchronized output.
+    public func linkRowContext(at location: LinkLookupLocation) -> LinkRowContext?
+    {
+        let buffer = displayBuffer
+        guard let position = resolveLinkLocation(location, in: buffer) else { return nil }
+        let line = buffer.lines[position.row]
+        return LinkRowContext(cells: Array(line.getData()), isWrapped: line.isWrapped,
+                              screenStartRow: buffer.yBase, rowCount: buffer.lines.count)
+    }
+
     public func linkLineContext(at location: LinkLookupLocation) -> LinkLineContext?
     {
         let buffer = displayBuffer
