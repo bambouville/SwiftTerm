@@ -304,10 +304,75 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
         #expect(terminal.linkLineContext(at: .buffer(Position(col: 3, row: 1)))?.text == ".evil.example/")
 
         // A row filled to the last column and continued by the program
-        // itself is two lines as well.
+        // itself is two lines as well, but one whose seam cannot end a link:
+        // a tmux capture writes a soft-wrapped row the same way.
         let full = Terminal(delegate: self, options: TerminalOptions(cols: 30, rows: 4, scrollback: 0))
         full.feed(text: "see https://example.com/abcdef\r\nghij\r\n")
-        #expect(full.linkLineContext(at: .buffer(Position(col: 10, row: 0)))?.text == "see https://example.com/abcdef")
+        let fullContext = full.linkLineContext(at: .buffer(Position(col: 10, row: 0)))
+        #expect(fullContext?.text == "see https://example.com/abcdef")
+        #expect(fullContext?.truncatedEnd == true)
+        #expect(full.linkLineContext(at: .buffer(Position(col: 1, row: 1)))?.truncatedStart == true)
+    }
+
+    // tmux capture-pane, and the repaints and history built from it, write
+    // each physical row and then CRLF, so a URL the pane wrapped arrives as
+    // two hard-broken rows. The first must not offer the cut-short origin
+    // `https://good.example.evil`.
+    @Test func testARowFilledToTheEdgeBeforeAHardBreakMayBeACapturedWrap() {
+        let cols = 25
+        func context(_ text: String, col: Int, row: Int) -> Terminal.LinkLineContext? {
+            let terminal = Terminal(delegate: self, options: TerminalOptions(cols: cols, rows: 4, scrollback: 0))
+            terminal.feed(text: text)
+            return terminal.linkLineContext(at: .buffer(Position(col: col, row: row)))
+        }
+        let captured = "https://good.example.evil\r\n.example/a\r\n"
+        #expect(context(captured, col: 10, row: 0)?.text == "https://good.example.evil")
+        #expect(context(captured, col: 10, row: 0)?.truncatedEnd == true)
+        #expect(context(captured, col: 3, row: 1)?.truncatedStart == true)
+
+        // A character two cells wide wraps a column early.
+        let early = "https://good.example.evi\r\n\u{754C}.example/a\r\n"
+        #expect(context(early, col: 10, row: 0)?.truncatedEnd == true)
+        #expect(context(early, col: 3, row: 1)?.truncatedStart == true)
+
+        // A row a column short before a narrow character, or one followed by
+        // a blank, ends where it stops.
+        let short = "https://good.example.evi\r\n.example/a\r\n"
+        #expect(context(short, col: 10, row: 0)?.truncatedEnd == false)
+        #expect(context(short, col: 3, row: 1)?.truncatedStart == false)
+        let spaced = "https://good.example.evil\r\n next\r\n"
+        #expect(context(spaced, col: 10, row: 0)?.truncatedEnd == false)
+        #expect(context(spaced, col: 2, row: 1)?.truncatedStart == false)
+    }
+
+    // A row the terminal wrapped into continues exactly, even when a wide
+    // character wrapped a column early: the ideographic space that opens it
+    // ends the URL instead of being dropped as indentation.
+    @Test func testAWideCharacterWrappedEarlyKeepsTheSpaceThatOpensItsRow() {
+        for indent in [59, 60] {
+            let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 4, scrollback: 0))
+            let lead = String(repeating: " ", count: indent)
+            terminal.feed(text: lead + "https://good.example\u{3000}.evil.example/\r\n")
+            let context = terminal.linkLineContext(at: .buffer(Position(col: indent + 10, row: 0)))
+            #expect(context?.text == lead + "https://good.example\u{3000}.evil.example/", "indent \(indent)")
+            #expect(terminal.link(at: .buffer(Position(col: indent + 10, row: 0)), mode: .explicitAndImplicit)
+                == "https://good.example", "indent \(indent)")
+        }
+    }
+
+    // When the scrollback evicts the start of a wrapped line, its oldest
+    // retained row is not where the line begins: here the nested
+    // `https://evil.example/a` belongs to the evicted `https://good.example/`.
+    @Test func testAWrappedLineWhoseStartWasEvictedIsTruncated() {
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 20, rows: 4, scrollback: 2))
+        let line = "https://good.example/?q=" + String(repeating: "/", count: 26) + "https://evil.example/a now"
+        terminal.feed(text: line + "\r\n\r\n\r\n\r\n")
+        #expect(terminal.buffer.lines.count == 6)
+        #expect(terminal.buffer.lines[0].isWrapped)
+        let context = terminal.linkLineContext(at: .buffer(Position(col: 14, row: 0)))
+        #expect(context?.text.hasPrefix(String(repeating: "/", count: 10) + "https://evil.example/a") == true)
+        #expect(context?.truncatedStart == true)
+        #expect(terminal.link(at: .buffer(Position(col: 14, row: 0)), mode: .explicitAndImplicit) == nil)
     }
 
     // A URL is looked for first, so a path can no longer swallow one.

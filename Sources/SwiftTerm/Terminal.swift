@@ -6087,8 +6087,10 @@ open class Terminal {
         /// Character (a pair of regional indicators, a combining mark left
         /// in a cell of its own), so Characters do not count cells.
         public let scalarOffset: Int
-        /// The line goes on before or after `text`, which holds only the
-        /// rows near the location.
+        /// The line goes on, or may, before or after `text`: it holds only
+        /// the rows near the location, the scrollback may have evicted the
+        /// rows before them, and a row filled to its edge before a hard break
+        /// may be a soft wrap whose flag a tmux capture dropped.
         public let truncatedStart: Bool
         public let truncatedEnd: Bool
     }
@@ -6615,13 +6617,22 @@ open class Terminal {
             joinedByHeuristic = true
         }
         // Either loop stops on a row that would still have joined only when
-        // the budget stopped it.
-        let truncatedStart = startRow > 0 && (joinedByHeuristic
-            ? canJoinImplicitRows(upper: startRow - 1, lower: startRow, in: buffer)
-            : buffer.lines[startRow].isWrapped)
-        let truncatedEnd = endRow + 1 < buffer.lines.count && (joinedByHeuristic
+        // the budget stopped it. A first row the terminal wrapped into has
+        // lost the start of its line too: the scrollback evicted it.
+        var truncatedStart = joinedByHeuristic
+            ? startRow > 0 && canJoinImplicitRows(upper: startRow - 1, lower: startRow, in: buffer)
+            : buffer.lines[startRow].isWrapped
+        var truncatedEnd = endRow + 1 < buffer.lines.count && (joinedByHeuristic
             ? canJoinImplicitRows(upper: endRow, lower: endRow + 1, in: buffer)
             : buffer.lines[endRow + 1].isWrapped)
+        if softWrapsOnly {
+            if !truncatedStart && startRow > 0 {
+                truncatedStart = mayBeUnflaggedSoftWrap(upper: startRow - 1, lower: startRow, in: buffer)
+            }
+            if !truncatedEnd && endRow + 1 < buffer.lines.count {
+                truncatedEnd = mayBeUnflaggedSoftWrap(upper: endRow, lower: endRow + 1, in: buffer)
+            }
+        }
 
         var text = ""
         var cells: [GhosttyImplicitCellRef] = []
@@ -6641,14 +6652,18 @@ open class Terminal {
             }
             // Indentation is dropped from a continuation row (a program that
             // broke the line itself and indented the rest), except where the
-            // terminal wrapped a row it had filled to the last column. That
-            // row continues exactly where the one above stopped, so a space
-            // at its start is a real space: `…/path` at the right edge
-            // followed by ` next` must not read `…/pathnext`.
+            // terminal wrapped a row it had filled: to the last column, or to
+            // the one before when a character two cells wide opens this row
+            // and so wrapped early. That row continues exactly where the one
+            // above stopped, so a space at its start is a real space:
+            // `…/path` at the right edge followed by ` next` must not read
+            // `…/pathnext`, nor `…good.example` and U+3000 `.evil.example`
+            // read `…good.example.evil.example`.
             let isContinuationRow = isImplicitContinuationRow(row, startRow: startRow, in: buffer)
-            let continuesAFullRow = line.isWrapped && row > 0
-                && buffer.lines[row - 1].getTrimmedLength() >= cols
-            let startCol = isContinuationRow && !continuesAFullRow
+            let aboveLength = row > 0 ? buffer.lines[row - 1].getTrimmedLength() : 0
+            let continuesAFilledRow = line.isWrapped && row > 0
+                && (aboveLength >= cols || (aboveLength == cols - 1 && line[0].width == 2))
+            let startCol = isContinuationRow && !continuesAFilledRow
                 ? firstNonWhitespaceColumn(in: line, lineLimit: lineLimit)
                 : 0
             guard startCol < lineLimit else {
@@ -6705,6 +6720,29 @@ open class Terminal {
             return true
         }
         return canJoinImplicitRows(upper: row - 1, lower: row, in: buffer)
+    }
+
+    /// A hard break straight after a row filled to its last column may be a
+    /// soft wrap that lost its flag: tmux capture-pane, and the repaints and
+    /// history built from it, write each physical row and then CRLF. Touch
+    /// cannot tell the two apart, so neither side of such a seam may end a
+    /// link. A row that ends one column short counts when a character two
+    /// cells wide starts the next, since that wraps a column early.
+    private func mayBeUnflaggedSoftWrap(upper: Int, lower: Int, in buffer: Buffer) -> Bool
+    {
+        let lowerLine = buffer.lines[lower]
+        guard !lowerLine.isWrapped, min(cols, lowerLine.count) > 0,
+              let upperInfo = linkRowEdgeInfo(row: upper, in: buffer)
+        else {
+            return false
+        }
+        let first = lowerLine[0]
+        guard first.code != 0, !getCharacter(for: first).isWhitespace else {
+            return false
+        }
+        let upperLine = buffer.lines[upper]
+        let reach = upperInfo.lastCol + max(1, Int(upperLine[upperInfo.lastCol].width))
+        return reach >= cols || (reach == cols - 1 && first.width == 2)
     }
 
     private func heuristicImplicitGroup(around row: Int, in buffer: Buffer, rowBudget: Int) -> (start: Int, end: Int)?
