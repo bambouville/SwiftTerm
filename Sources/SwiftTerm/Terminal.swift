@@ -6104,11 +6104,19 @@ open class Terminal {
     }
 
     /// Buffer-relative coordinates, including scrollback. Reading live rows
-    /// here would expose text hidden by synchronized output.
+    /// here would expose text hidden by synchronized output. A row outside
+    /// the buffer is nil, not its nearest row: a caller asking for the row
+    /// above the first must not be handed the first row again.
     public func linkRowContext(at location: LinkLookupLocation) -> LinkRowContext?
     {
         let buffer = displayBuffer
-        guard let position = resolveLinkLocation(location, in: buffer) else { return nil }
+        let row: Int
+        switch location {
+        case .buffer(let position): row = position.row
+        case .screen(let position): row = position.row + buffer.yDisp
+        }
+        guard row >= 0, row < buffer.lines.count,
+              let position = resolveLinkLocation(location, in: buffer) else { return nil }
         let line = buffer.lines[position.row]
         return LinkRowContext(cells: Array(line.getData()), isWrapped: line.isWrapped,
                               screenStartRow: buffer.yBase, rowCount: buffer.lines.count)

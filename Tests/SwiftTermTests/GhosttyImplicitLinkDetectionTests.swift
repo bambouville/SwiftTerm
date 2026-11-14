@@ -293,6 +293,18 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
     // wrapped, never rows a program ended: the pointer's guess that an
     // indented or right-edge row continues the one above would otherwise
     // build `https://good.example.evil.example/` out of two lines.
+    @Test func testLinkRowContextHasNoRowsOutsideTheBuffer() {
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 30, rows: 3, scrollback: 0))
+        terminal.feed(text: "https://example.com/a|jq")
+        let first = terminal.linkRowContext(at: .buffer(Position(col: 0, row: 0)))
+        #expect(first?.cells.first?.getCharacter() == "h")
+        #expect(first?.rowCount == 3)
+        #expect(terminal.linkRowContext(at: .buffer(Position(col: 0, row: -1))) == nil)
+        #expect(terminal.linkRowContext(at: .buffer(Position(col: 0, row: 3))) == nil)
+        #expect(terminal.linkRowContext(at: .screen(Position(col: 0, row: -1))) == nil)
+        #expect(terminal.linkRowContext(at: .buffer(Position(col: 0, row: 2))) != nil)
+    }
+
     @Test func testLinkLineContextStopsAtAHardNewline() {
         let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 4, scrollback: 0))
         let lead = String(repeating: " ", count: 50)
