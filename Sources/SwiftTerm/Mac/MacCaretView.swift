@@ -18,6 +18,7 @@ import CoreText
 class CaretView: NSView, CALayerDelegate {
     weak var terminal: TerminalView?
     var ctline: CTLine?
+    var symbolStyle: SymbolRunStyle?
     var bgColor: CGColor
     var tracksFocus = true
     
@@ -45,10 +46,22 @@ class CaretView: NSView, CALayerDelegate {
     }
     
     func setText (ch: CharData) {
+        symbolStyle = nil
         let character = terminal?.terminal.getCharacter(for: ch) ?? " "
-        let res = NSAttributedString (
-            string: String (character),
-            attributes: terminal?.getAttributedValue(ch.attribute, usingFg: caretColor, andBg: caretTextColor ?? terminal?.nativeForegroundColor ?? NSColor.black))
+        var attributes = terminal?.getAttributedValue(ch.attribute, usingFg: caretColor,
+            andBg: caretTextColor ?? terminal?.nativeForegroundColor ?? TTColor.black)
+        if let terminal, let original = attributes {
+            let buffer = terminal.terminal.displayBuffer
+            let row = buffer.yBase + buffer.y
+            if row >= 0 && row < buffer.lines.count {
+                if let style = terminal.cursorSymbolStyle(character: character, row: row,
+                    column: buffer.x, line: buffer.lines[row], columns: buffer.cols) {
+                    attributes = style.applying(to: original)
+                    symbolStyle = style
+                }
+            }
+        }
+        let res = NSAttributedString(string: String(character), attributes: attributes)
         ctline = CTLineCreateWithAttributedString(res)
 
         setNeedsDisplay(bounds)

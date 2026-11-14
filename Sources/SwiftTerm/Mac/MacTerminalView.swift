@@ -174,6 +174,22 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     public var disableFullRedrawOnAnyChanges = false
     var fontSet: FontSet
 
+    /// Optional face for missing private-use glyphs. Its size is normalized to
+    /// the terminal font; nil preserves the original rendering path.
+    public var symbolsFont: NSFont? {
+        didSet {
+            guard oldValue != symbolsFont else { return }
+            invalidateSymbolFonts()
+            resetCaches()
+            updateCaretView()
+            updateCursorPosition()
+            terminal.updateFullScreen()
+            queuePendingDisplay()
+        }
+    }
+    let symbolFontCache = TerminalSymbolFontCache()
+    var symbolFontGeneration: UInt64 = 0
+
     /// The font to use to render the terminal
     public var font: NSFont {
         get {

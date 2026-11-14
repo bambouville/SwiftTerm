@@ -66,7 +66,23 @@ struct ViewLineSegment {
     let columnWidth: Int
     let characterCount: Int
     let attributedString: NSAttributedString
+    var symbols: [Int: SymbolRunStyle] = [:]
+    var occupiedPlaceholders: Set<Int> = []
     
+    func originalAttributedString() -> NSAttributedString {
+        let original = NSMutableAttributedString(attributedString: attributedString)
+        for index in symbols.keys {
+            let range = (original.string as NSString).rangeOfComposedCharacterSequence(at: index)
+            let font = original.attribute(SwiftTermSymbolOriginalFontKey, at: index, effectiveRange: nil)!
+            original.addAttribute(.font, value: font, range: range)
+            for key in [SwiftTermSymbolOriginalFontKey, SwiftTermSymbolIdentityKey,
+                        SwiftTermSymbolOffsetKey, SwiftTermSymbolXOffsetKey, SwiftTermSymbolCellKey] {
+                original.removeAttribute(key, range: range)
+            }
+        }
+        return original
+    }
+
     var columnSpan: Int {
         return max(0, characterCount * columnWidth)
     }
@@ -81,15 +97,31 @@ struct ViewLineInfo {
     var kittyPlaceholders: [KittyPlaceholderCell]
     var blockElements: [BlockElementRenderItem]
     var boxDrawings: [BoxDrawingRenderItem]
+
+    var resolvedSymbols: [Int: SymbolRunStyle] {
+        var result: [Int: SymbolRunStyle] = [:]
+        for segment in segments { for style in segment.symbols.values {
+            result[style.cell.sourceColumn] = style
+        } }
+        return result
+    }
+
+    func symbol(atSourceColumn column: Int) -> SymbolRunStyle? {
+        for segment in segments {
+            if let style = segment.symbols.values.first(where: { $0.cell.sourceColumn == column }) { return style }
+        }
+        return nil
+    }
 }
 
 struct PreparedCoreGraphicsRow {
+    let deviceScale: CGFloat
     let cells: [CharData]
     let columns: Int
     let customBlocks: Bool
     let linkMode: LinkHighlightMode
     let info: ViewLineInfo
-    let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])]
+    let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun], symbols: [SymbolRunStyle?]?)]
 }
 
 extension TerminalView {
@@ -106,9 +138,71 @@ extension TerminalView {
         self.trueColors = [:]
     }
     
+    func invalidateSymbolFonts() {
+        symbolFontCache.reset()
+        symbolFontGeneration &+= 1
+#if canImport(MetalKit)
+        metalRenderer?.invalidateFonts()
+#endif
+    }
+
+    /// Shared by row construction and both cursor paths. Backgrounds and
+    /// decorations retain the selected font's metrics and unshifted baseline.
+    func symbolAttributes(character: Character, cell: CharData, column: Int, line: BufferLine,
+                          columns: Int, attributes: [NSAttributedString.Key: Any], renderColumn: Int? = nil,
+                          renderedNextCellIsBlank: Bool? = nil) -> [NSAttributedString.Key: Any]? {
+        let codePoint = cell.isSimpleRune ? Int(cell.code) : Int(character.unicodeScalars.first?.value ?? 0)
+        guard TerminalSymbolFallback.isPrivateUse(codePoint), let symbolsFont,
+              let selected = attributes[.font] as? TTFont else { return nil }
+        let width = max(1, Int(cell.width))
+        let nextColumn = (renderColumn ?? column) + width
+        let nextExists = nextColumn < columns
+        let nextIsBlank = nextExists && (renderedNextCellIsBlank ?? (line[nextColumn].code == 0 || line[nextColumn].code == 32))
+        let baseline = ceil(CTFontGetDescent(fontSet.normal) + CTFontGetLeading(fontSet.normal))
+        guard let resolved = symbolFontCache.resolve(codePoint: UInt32(codePoint), scalarCount: character.unicodeScalars.count, selected: selected,
+            symbols: symbolsFont, pointSize: fontSet.normal.pointSize, columns: width,
+            nextCellExists: nextExists, nextCellIsBlank: nextIsBlank,
+            cellSize: cellDimension, baseline: baseline, deviceScale: backingScaleFactor()) else { return nil }
+        var result = attributes
+        result[.font] = resolved.font
+        result[SwiftTermSymbolOffsetKey] = resolved.offset
+        result[SwiftTermSymbolXOffsetKey] = resolved.offsetX
+        result[SwiftTermSymbolIdentityKey] = resolved.identity
+        result[SwiftTermSymbolOriginalFontKey] = selected
+        // Distinct cell attributes keep adjacent symbols in independent CTRuns,
+        // without splitting the paragraph used for bidi resolution.
+        result[SwiftTermSymbolCellKey] = SymbolCell(column: renderColumn ?? column, columns: width, sourceColumn: column)
+        return result
+    }
+
+    /// Carets resolve once when their text changes, then reuse the fitted row font
+    /// during blinking. Cursor colors remain independent of row colors.
+    func cursorSymbolStyle(character: Character, row: Int, column: Int,
+                           line: BufferLine, columns: Int) -> SymbolRunStyle? {
+        guard let scalar = character.unicodeScalars.first,
+              TerminalSymbolFallback.isPrivateUse(Int(scalar.value)), character.unicodeScalars.count == 1,
+              symbolsFont != nil else { return nil }
+        let scale = backingScaleFactor()
+        let reusable = selection?.active != true && linkHighlightRange == nil && !commandActive
+            && line.images == nil && terminal.kittyGraphicsState.placementsByKey.isEmpty
+        if reusable, let cached = symbolFontCache.cursorStyles(row: row, line: line, columns: columns,
+            cellSize: cellDimension, deviceScale: scale, customBlocks: customBlockGlyphs,
+            character: { terminal.getCharacter(for: $0) }) {
+            return cached[column]
+        }
+        let styles = prepareCoreGraphicsRow(row: row, line: line, cols: columns).info.resolvedSymbols
+        if reusable {
+            symbolFontCache.rememberCursorRow(row: row, line: line, columns: columns,
+                cellSize: cellDimension, deviceScale: scale, customBlocks: customBlockGlyphs, symbols: styles,
+                character: { terminal.getCharacter(for: $0) })
+        }
+        return styles[column]
+    }
+
     // This is invoked when the font changes to recompute state
     func resetFont()
     {
+        invalidateSymbolFonts()
         resetCaches()
         #if os(iOS) || os(visionOS)
         let previousCellHeight = cellDimension.height
@@ -130,6 +224,7 @@ extension TerminalView {
         resize(cols: newCols, rows: newRows)
         #endif
         updateCaretView()
+        if symbolsFont != nil { updateCursorPosition() }
         
         #if os(macOS)
         needsDisplay = true
@@ -591,6 +686,8 @@ extension TerminalView {
         let columnWidth: Int
         private var attributedString = NSMutableAttributedString()
         private var characterCount: Int = 0
+        private var symbols: [Int: SymbolRunStyle] = [:]
+        private var occupiedPlaceholders = Set<Int>()
         
         init(column: Int, columnWidth: Int) {
             self.column = column
@@ -606,18 +703,28 @@ extension TerminalView {
             characterCount += 1
         }
         
+        mutating func appendOccupiedPlaceholder(attributes: [NSAttributedString.Key: Any]) {
+            occupiedPlaceholders.insert(attributedString.length)
+            append(text: " ", attributes: attributes)
+        }
+
+        mutating func appendSymbol(text: String, attributes: [NSAttributedString.Key: Any], codePoint: Int) {
+            symbols[attributedString.length] = SymbolRunStyle(attributes: attributes, codePoint: codePoint)
+            append(text: text, attributes: attributes)
+        }
+
         func buildIfNeeded() -> ViewLineSegment? {
             guard !isEmpty else {
                 return nil
             }
-            return ViewLineSegment(column: column, columnWidth: columnWidth, characterCount: characterCount, attributedString: attributedString)
+            return ViewLineSegment(column: column, columnWidth: columnWidth, characterCount: characterCount, attributedString: attributedString, symbols: symbols, occupiedPlaceholders: occupiedPlaceholders)
         }
     }
     
     //
     // Given a line of text with attributes, returns column-aware segments that can be drawn later.
     //
-    func buildAttributedString (row: Int, line: BufferLine, cols: Int) -> ViewLineInfo
+    func buildAttributedString (row: Int, line: BufferLine, cols: Int, forMetal: Bool = false) -> ViewLineInfo
     {
         var segments: [ViewLineSegment] = []
         let selectionColumns = selectedColumnsRange(row: row, cols: cols)
@@ -690,6 +797,18 @@ extension TerminalView {
 
             let character = ch.code == 0 ? " " : terminal.getCharacter(for: ch)
 
+            if let symbol = symbolAttributes(character: character, cell: ch, column: col,
+                                             line: line, columns: cols, attributes: currentAttributes) {
+                flushPending()
+                // Keep the paragraph intact: independently shaped chunks reorder RTL text.
+                builder?.appendSymbol(text: String(character), attributes: symbol,
+                    codePoint: Int(character.unicodeScalars.first!.value))
+                previousPlaceholder = nil
+                previousPlaceholderAttribute = nil
+                col += width
+                continue
+            }
+
             // Renders box drawing characters independently of the font
             // U+2500...U+257F
             if customBlockGlyphs,
@@ -701,7 +820,7 @@ extension TerminalView {
                                                         columnWidth: width,
                                                         codePoint: UInt32(ch.code),
                                                         foregroundColor: fgColor))
-                builder?.append(text: " ", attributes: currentAttributes)
+                builder?.appendOccupiedPlaceholder(attributes: currentAttributes)
                 previousPlaceholder = nil
                 previousPlaceholderAttribute = nil
             // Renders block elements independently of the font
@@ -716,7 +835,7 @@ extension TerminalView {
                                                             codePoint: UInt32(ch.code),
                                                             rects: rects,
                                                             foregroundColor: fgColor))
-                builder?.append(text: " ", attributes: currentAttributes)
+                builder?.appendOccupiedPlaceholder(attributes: currentAttributes)
                 previousPlaceholder = nil
                 previousPlaceholderAttribute = nil
             } else if let placeholder = KittyPlaceholderDecoder.decode(character: character,
@@ -727,7 +846,7 @@ extension TerminalView {
                                                                        previousAttribute: previousPlaceholderAttribute) {
                 flushPending()
                 kittyPlaceholders.append(placeholder)
-                builder?.append(text: " ", attributes: currentAttributes)
+                builder?.appendOccupiedPlaceholder(attributes: currentAttributes)
                 previousPlaceholder = placeholder
                 previousPlaceholderAttribute = attr
             } else {
@@ -745,6 +864,96 @@ extension TerminalView {
             segments.append(finished)
         }
         
+        var occupiedColumns = Set<Int>()
+        let hasSymbols = segments.contains(where: { !$0.symbols.isEmpty })
+        if hasSymbols {
+            // Custom renderers keep their physical source columns even in RTL text.
+            for item in boxDrawings { occupiedColumns.formUnion(item.column..<(item.column + item.columnWidth)) }
+            for item in blockElements { occupiedColumns.formUnion(item.column..<(item.column + item.columnWidth)) }
+            for item in kittyPlaceholders { occupiedColumns.insert(item.col) }
+        }
+        if hasSymbols, let images = line.images {
+            for case let image as AppleImage in images where image.pixelWidth > 0 && image.pixelHeight > 0 {
+                let scale = getImageScale()
+                let offsetX = image.kittyIsKitty ? CGFloat(image.kittyPixelOffsetX) / scale : 0
+                let offsetY = image.kittyIsKitty ? CGFloat(image.kittyPixelOffsetY) / scale : 0
+                let x = CGFloat(image.col) * cellDimension.width + offsetX
+                let y = cellDimension.height - CGFloat(image.pixelHeight) + offsetY
+                guard y < cellDimension.height, y + CGFloat(image.pixelHeight) > 0 else { continue }
+                let first = max(0, Int(floor(x / cellDimension.width)))
+                let end = min(cols, Int(ceil((x + CGFloat(image.pixelWidth)) / cellDimension.width)))
+                if first < end { occupiedColumns.formUnion(first..<end) }
+            }
+        }
+
+        for i in segments.indices where !segments[i].symbols.isEmpty {
+            let segment = segments[i]
+            let original = segment.originalAttributedString()
+            let text = original.string as NSString
+            // Count source cells, not glyphs: a base and mark may be two glyphs.
+            // The original paragraph supplies the visual order, including blanks.
+            var paragraphs: [(CTLine, Int)] = []
+            if forMetal {
+                // Metal has always resolved each original style range separately.
+                original.enumerateAttributes(in: NSRange(location: 0, length: original.length)) { _, range, _ in
+                    paragraphs.append((CTLineCreateWithAttributedString(original.attributedSubstring(from: range)), range.location))
+                }
+            } else {
+                paragraphs.append((CTLineCreateWithAttributedString(original), 0))
+            }
+            var visited = Set<Int>()
+            var columns: [Int: Int] = [:]
+            var blanks: [Int: Bool] = [:]
+            var visualColumn = segment.column
+            for (ctLine, offset) in paragraphs {
+                for run in CTLineGetGlyphRuns(ctLine) as? [CTRun] ?? [] {
+                    let runRange = CTRunGetStringRange(run)
+                    let range = CFRange(location: offset + runRange.location, length: runRange.length)
+                    var runCells: [NSRange] = []
+                    var index = range.location
+                    while index < range.location + range.length {
+                        let cellRange = text.rangeOfComposedCharacterSequence(at: index)
+                        runCells.append(cellRange)
+                        index = NSMaxRange(cellRange)
+                    }
+                    if CTRunGetStatus(run).contains(.rightToLeft) { runCells.reverse() }
+                    for cellRange in runCells where visited.insert(cellRange.location).inserted {
+                        columns[cellRange.location] = visualColumn
+                        blanks[visualColumn] = text.substring(with: cellRange) == " "
+                            && !segment.occupiedPlaceholders.contains(cellRange.location)
+                            && !occupiedColumns.contains(visualColumn)
+                        visualColumn += segment.columnWidth
+                    }
+                }
+            }
+            var fitted: NSMutableAttributedString?
+            var symbols: [Int: SymbolRunStyle] = [:]
+            for (index, style) in segment.symbols {
+                let sourceColumn = style.cell.column
+                let targetColumn = columns[index] ?? sourceColumn
+                let next = targetColumn + style.cell.columns
+                let nextIsBlank = blanks[next] == true && next < cols
+                let sourceNext = sourceColumn + style.cell.columns
+                let sourceNextIsBlank = sourceNext < cols && (line[sourceNext].code == 0 || line[sourceNext].code == 32)
+                if targetColumn == sourceColumn && nextIsBlank == sourceNextIsBlank {
+                    symbols[index] = style
+                    continue
+                }
+                let cell = line[sourceColumn]
+                let character = terminal.getCharacter(for: cell)
+                let attributes = original.attributes(at: index, effectiveRange: nil)
+                if let resolved = symbolAttributes(character: character, cell: cell, column: sourceColumn,
+                    line: line, columns: cols, attributes: attributes, renderColumn: targetColumn,
+                    renderedNextCellIsBlank: nextIsBlank) {
+                    if fitted == nil { fitted = NSMutableAttributedString(attributedString: segment.attributedString) }
+                    fitted!.setAttributes(resolved, range: text.rangeOfComposedCharacterSequence(at: index))
+                    symbols[index] = SymbolRunStyle(attributes: resolved, codePoint: Int(character.unicodeScalars.first!.value))
+                }
+            }
+            segments[i] = ViewLineSegment(column: segment.column, columnWidth: segment.columnWidth,
+                characterCount: segment.characterCount, attributedString: fitted ?? segment.attributedString, symbols: symbols,
+                occupiedPlaceholders: segment.occupiedPlaceholders)
+        }
         return ViewLineInfo(segments: segments,
                             images: line.images,
                             kittyPlaceholders: kittyPlaceholders,
@@ -1040,7 +1249,7 @@ extension TerminalView {
         if attributes.keys.contains(.strikethroughStyle) {
             let strikeStyle = NSUnderlineStyle(rawValue: attributes[.strikethroughStyle] as? NSUnderlineStyle.RawValue ?? 0)
             let strikeColor = attributes[.strikethroughColor] as? TTColor ?? nativeForegroundColor
-            let font = (attributes[.font] as? TTFont) ?? fontSet.normal
+            let font = (attributes[SwiftTermSymbolOriginalFontKey] as? TTFont) ?? (attributes[.font] as? TTFont) ?? fontSet.normal
             let ctFont = font as CTFont
             let strikeThickness = max(round(scale * CTFontGetUnderlineThickness(ctFont)) / scale, 0.5)
             let strikePosition = (CTFontGetXHeight(ctFont) + strikeThickness) * 0.5
@@ -1177,11 +1386,12 @@ extension TerminalView {
     /// synchronized buffers and alternate-screen swaps can all reuse row indices.
     /// Keep dynamic selection/link/image rendering on the uncached path.
     func prepareCoreGraphicsRow(row: Int, line: BufferLine, cols: Int) -> PreparedCoreGraphicsRow {
+        let deviceScale = backingScaleFactor()
 #if os(iOS) || os(visionOS)
         let cacheable = cachesCoreGraphicsRows && selection?.active != true
             && linkHighlightRange == nil && !commandActive && line.images == nil
             && terminal.kittyGraphicsState.placementsByKey.isEmpty
-        if cacheable, let cached = coreGraphicsRows[row], cached.columns == cols,
+        if cacheable, let cached = coreGraphicsRows[row], cached.deviceScale == deviceScale, cached.columns == cols,
            cached.customBlocks == customBlockGlyphs, cached.linkMode == linkHighlightMode,
            cached.cells.count == line.count {
             var matches = true
@@ -1198,19 +1408,22 @@ extension TerminalView {
         }
 #endif
         let info = buildAttributedString(row: row, line: line, cols: cols)
-        let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])] =
+        let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun], symbols: [SymbolRunStyle?]?)] =
             info.segments.compactMap { segment in
                 guard segment.attributedString.length > 0 else { return nil }
                 let ctLine = CTLineCreateWithAttributedString(segment.attributedString)
                 guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
-                return (segment, ctLine, runs)
+                let symbols: [SymbolRunStyle?]? = segment.symbols.isEmpty ? nil : runs.map { run in
+                    SymbolRunStyle.lookup(segment.symbols, at: CTRunGetStringRange(run).location)
+                }
+                return (segment, ctLine, runs, symbols)
             }
 #if os(iOS) || os(visionOS)
         let cells = cacheable && info.kittyPlaceholders.isEmpty ? line.getData() : []
 #else
         let cells: [CharData] = []
 #endif
-        let result = PreparedCoreGraphicsRow(cells: cells, columns: cols,
+        let result = PreparedCoreGraphicsRow(deviceScale: deviceScale, cells: cells, columns: cols,
             customBlocks: customBlockGlyphs, linkMode: linkHighlightMode, info: info, segments: segments)
 #if os(iOS) || os(visionOS)
         if cacheable && info.kittyPlaceholders.isEmpty {
@@ -1370,13 +1583,15 @@ extension TerminalView {
 
             for prepared in preparedSegments {
                 var processedGlyphs = 0
-                for run in prepared.runs {
+                for (runIndex, run) in prepared.runs.enumerated() {
+                    let symbol = prepared.symbols?[runIndex]
                     let runGlyphsCount = CTRunGetGlyphCount(run)
                     if runGlyphsCount == 0 {
                         continue
                     }
                     let runAttributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
-                    let startColumn = prepared.segment.column + (processedGlyphs * prepared.segment.columnWidth)
+                    let startColumn = symbol?.cell.column
+                        ?? (prepared.segment.column + processedGlyphs * prepared.segment.columnWidth)
                     let endColumn = startColumn + (runGlyphsCount * prepared.segment.columnWidth)
                     var backgroundColor: TTColor?
                     if runAttributes.keys.contains(.selectionBackgroundColor) {
@@ -1454,14 +1669,16 @@ extension TerminalView {
             // Glyph drawing loop — reuses cached CTLines
             for prepared in preparedSegments {
                 var processedGlyphs = 0
-                for run in prepared.runs {
+                for (runIndex, run) in prepared.runs.enumerated() {
+                    let symbol = prepared.symbols?[runIndex]
                     let runGlyphsCount = CTRunGetGlyphCount(run)
                     if runGlyphsCount == 0 {
                         continue
                     }
                     let runAttributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
                     let runFont = runAttributes[.font] as! TTFont
-                    let startColumn = prepared.segment.column + (processedGlyphs * prepared.segment.columnWidth)
+                    let startColumn = symbol?.cell.column
+                        ?? (prepared.segment.column + processedGlyphs * prepared.segment.columnWidth)
 
                     let runGlyphs = [CGGlyph](unsafeUninitializedCapacity: runGlyphsCount) { (bufferPointer, count) in
                         CTRunGetGlyphs(run, CFRange(), bufferPointer.baseAddress!)
@@ -1491,7 +1708,39 @@ extension TerminalView {
                         context.setFillColor(cgColor)
                     }
 
-                    CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+                    if let symbol {
+                        for i in positions.indices {
+                            positions[i].x += symbol.offsetX
+                            positions[i].y += symbol.offsetY
+                        }
+                        context.saveGState()
+                        // Smoothing expands ink; quantization snaps the fitted fractional origin.
+                        context.setShouldSmoothFonts(false)
+                        context.setAllowsFontSubpixelPositioning(true)
+                        context.setShouldSubpixelPositionFonts(true)
+                        context.setAllowsFontSubpixelQuantization(false)
+                        context.setShouldSubpixelQuantizeFonts(false)
+                        if symbol.separator {
+                            for i in positions.indices {
+                                context.saveGState()
+                                context.clip(to: CGRect(x: lineOrigin.x + CGFloat(startColumn + i * symbol.cell.columns) * cellDimension.width,
+                                    y: lineOrigin.y, width: CGFloat(symbol.cell.columns) * cellDimension.width,
+                                    height: cellDimension.height))
+                                var glyph = runGlyphs[i], position = positions[i]
+                                CTFontDrawGlyphs(runFont, &glyph, &position, 1, context)
+                                context.restoreGState()
+                            }
+                        } else {
+                            CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+                        }
+                        context.restoreGState()
+                        for i in positions.indices {
+                            positions[i].x = lineOrigin.x + CGFloat(startColumn + i * prepared.segment.columnWidth) * cellDimension.width
+                            positions[i].y = lineOrigin.y + yOffset + coreTextPositions[i].y
+                        }
+                    } else {
+                        CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+                    }
 
                     // Draw other attributes
                     drawRunAttributes(runAttributes, glyphPositions: positions, in: context)

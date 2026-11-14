@@ -260,6 +260,22 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var lastFloatingCursorLocation: CGPoint?
     
     var fontSet: FontSet
+
+    /// Optional face for missing private-use glyphs. Its size is normalized to
+    /// the terminal font; nil preserves the original rendering path.
+    public var symbolsFont: UIFont? {
+        didSet {
+            guard oldValue != symbolsFont else { return }
+            invalidateSymbolFonts()
+            resetCaches()
+            updateCaretView()
+            updateCursorPosition()
+            terminal.updateFullScreen()
+            queuePendingDisplay()
+        }
+    }
+    let symbolFontCache = TerminalSymbolFontCache()
+    var symbolFontGeneration: UInt64 = 0
     
     /// The font to use to render the terminal, this attempts to derive the bold, italic and italic/bold variants from
     /// the original font, using the iOS UIFontDescriptor APIs.   For full control use the `setFonts(normal:bold:italic:boldItalic)`

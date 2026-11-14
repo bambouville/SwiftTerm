@@ -48,6 +48,8 @@ extension CaretView {
         }
         let caretFG = caretTextColor ?? terminal.nativeForegroundColor
         context.setFillColor(caretFG.cgColor)
+        let glyphX = symbolStyle?.offsetX ?? 0
+        let glyphY = yOffset + (symbolStyle?.offsetY ?? 0)
         for run in CTLineGetGlyphRuns(ctline) as? [CTRun] ?? [] {
             let runGlyphsCount = CTRunGetGlyphCount(run)
             let runAttributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
@@ -59,9 +61,20 @@ extension CaretView {
             }
 
             var positions = runGlyphs.enumerated().map { (i: Int, glyph: CGGlyph) -> CGPoint in
-                CGPoint(x: 0, y: yOffset)
+                CGPoint(x: glyphX, y: glyphY)
             }
-            CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+            if symbolStyle != nil {
+                context.saveGState()
+                context.setShouldSmoothFonts(false)
+                context.setAllowsFontSubpixelPositioning(true)
+                context.setShouldSubpixelPositionFonts(true)
+                context.setAllowsFontSubpixelQuantization(false)
+                context.setShouldSubpixelQuantizeFonts(false)
+                CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+                context.restoreGState()
+            } else {
+                CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+            }
         }
         context.restoreGState()
     }

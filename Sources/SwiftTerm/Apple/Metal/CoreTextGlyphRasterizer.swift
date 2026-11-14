@@ -3,7 +3,7 @@ import CoreGraphics
 import CoreText
 
 final class CoreTextGlyphRasterizer {
-    func rasterize(font: CTFont, glyph: CGGlyph) -> GlyphBitmap? {
+    func rasterize(font: CTFont, glyph: CGGlyph, fittedSymbol: Bool = false) -> GlyphBitmap? {
         var glyphVar = glyph
         let rect = CTFontGetBoundingRectsForGlyphs(font, .default, &glyphVar, nil, 1)
         if rect.width <= 0 || rect.height <= 0 {
@@ -47,7 +47,7 @@ final class CoreTextGlyphRasterizer {
             context.setAllowsFontSubpixelQuantization(false)
             context.setShouldSubpixelQuantizeFonts(false)
             context.setAllowsFontSmoothing(true)
-            context.setShouldSmoothFonts(true)
+            context.setShouldSmoothFonts(!fittedSymbol)
 
             context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
