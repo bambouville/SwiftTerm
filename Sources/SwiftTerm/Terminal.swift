@@ -6633,6 +6633,18 @@ open class Terminal {
                 truncatedEnd = mayBeUnflaggedSoftWrap(upper: endRow, lower: endRow + 1, in: buffer)
             }
         }
+        // A buffer that does not reflow (the alternate screen) keeps a row's
+        // cells past the width it shrank to. Joining such a row to the next
+        // would splice text around what is hidden, and its visible end is not
+        // the end of its text: cut the line there and say so.
+        if let cut = (startRow..<targetRow).reversed().first(where: { hasCellsPastWidth(row: $0, in: buffer) }) {
+            startRow = cut + 1
+            truncatedStart = true
+        }
+        if let cut = (targetRow...endRow).first(where: { hasCellsPastWidth(row: $0, in: buffer) }) {
+            endRow = cut
+            truncatedEnd = true
+        }
 
         var text = ""
         var cells: [GhosttyImplicitCellRef] = []
@@ -6720,6 +6732,23 @@ open class Terminal {
             return true
         }
         return canJoinImplicitRows(upper: row - 1, lower: row, in: buffer)
+    }
+
+    /// Whether a row keeps text past the current width, as the alternate
+    /// screen does after it shrinks: it does not reflow.
+    private func hasCellsPastWidth(row: Int, in buffer: Buffer) -> Bool
+    {
+        let line = buffer.lines[row]
+        guard line.count > cols else {
+            return false
+        }
+        for col in cols..<line.count {
+            let cell = line[col]
+            if cell.code != 0 && !getCharacter(for: cell).isWhitespace {
+                return true
+            }
+        }
+        return false
     }
 
     /// A hard break straight after a row filled to its last column may be a

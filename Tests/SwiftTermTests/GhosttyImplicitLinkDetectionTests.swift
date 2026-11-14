@@ -375,6 +375,36 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
         #expect(terminal.link(at: .buffer(Position(col: 14, row: 0)), mode: .explicitAndImplicit) == nil)
     }
 
+    // The alternate screen does not reflow, so after it shrinks a row keeps
+    // text past the width: its visible end is not its end, and joining it to
+    // the next row would splice around what is hidden.
+    @Test func testTextPastTheWidthOfAShrunkAlternateScreenTruncatesTheLine() {
+        func shrunk(_ text: String) -> Terminal {
+            let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 80, rows: 4, scrollback: 0))
+            terminal.feed(text: "\u{1b}[?1049h" + text)
+            terminal.resize(cols: 25, rows: 4)
+            #expect(terminal.isCurrentBufferAlternate)
+            return terminal
+        }
+        let clipped = shrunk("https://good.example.evil.example/a\r\n")
+        let context = clipped.linkLineContext(at: .buffer(Position(col: 10, row: 0)))
+        #expect(context?.text == "https://good.example.evil")
+        #expect(context?.truncatedEnd == true)
+        #expect(clipped.link(at: .buffer(Position(col: 10, row: 0)), mode: .explicitAndImplicit) == nil)
+
+        // 100 columns of URL: an 80-column row, then a wrapped row of 20.
+        let wrapped = shrunk("https://good.example/" + String(repeating: "a", count: 71) + "/b/c/d/e\r\n")
+        #expect(wrapped.buffer.lines[1].isWrapped)
+        let tail = wrapped.linkLineContext(at: .buffer(Position(col: 3, row: 1)))
+        #expect(tail?.text == "aaaaaaaaaaaa/b/c/d/e")
+        #expect(tail?.truncatedStart == true)
+
+        // A link the shrink left whole is still a link.
+        let fits = shrunk("https://ex.com/a\r\n")
+        #expect(fits.linkLineContext(at: .buffer(Position(col: 5, row: 0)))?.truncatedEnd == false)
+        #expect(fits.link(at: .buffer(Position(col: 5, row: 0)), mode: .explicitAndImplicit) == "https://ex.com/a")
+    }
+
     // A URL is looked for first, so a path can no longer swallow one.
     @Test func testAURLWinsOverAPathThatContainsIt() {
         assertImplicitMatch(input: "see ./mirror/https://example.com/a.txt now", expected: "https://example.com/a.txt")
