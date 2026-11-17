@@ -1464,24 +1464,39 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                     var advance = CGSize.zero
                     CTFontGetAdvancesForGlyphs(normalFont, .default, &xGlyph, &advance, 1)
                     let width = cellWidth > 0 ? cellWidth : advance.width
+                    var visualColumn = segment.column
+                    var processedGlyphs = 0
                     original.enumerateAttributes(in: NSRange(location: 0, length: original.length)) { styledAttributes, range, _ in
                         let text = segment.attributedString.attributedSubstring(from: range)
                         let line = CTLineCreateWithAttributedString(text)
-                        let originalLine = CTLineCreateWithAttributedString(original.attributedSubstring(from: range))
+                        let originalText = original.attributedSubstring(from: range)
+                        let originalString = originalText.string as NSString
+                        let originalLine = CTLineCreateWithAttributedString(originalText)
                         var originalPositions: [CFIndex: [CGPoint]] = [:]
-                        var firstX: CGFloat?
+                        var cellColumns: [Int: Int] = [:]
                         for run in CTLineGetGlyphRuns(originalLine) as? [CTRun] ?? [] {
+                            let runRange = CTRunGetStringRange(run)
+                            var cells: [Int] = []
+                            var index = runRange.location
+                            while index < runRange.location + runRange.length {
+                                let cell = originalString.rangeOfComposedCharacterSequence(at: index)
+                                cells.append(cell.location)
+                                index = NSMaxRange(cell)
+                            }
+                            if CTRunGetStatus(run).contains(.rightToLeft) { cells.reverse() }
+                            for cell in cells where cellColumns[cell] == nil {
+                                cellColumns[cell] = visualColumn
+                                visualColumn += segment.columnWidth
+                            }
                             let count = CTRunGetGlyphCount(run)
                             var indices = [CFIndex](repeating: 0, count: count)
                             var positions = [CGPoint](repeating: .zero, count: count)
                             CTRunGetStringIndices(run, CFRange(), &indices)
                             CTRunGetPositions(run, CFRange(), &positions)
                             for (index, position) in zip(indices, positions) {
-                                if firstX == nil { firstX = position.x }
                                 originalPositions[index, default: []].append(position)
                             }
                         }
-                        var precedingGlyphs = 0
                         for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
                             let count = CTRunGetGlyphCount(run)
                             guard count > 0 else { continue }
@@ -1492,9 +1507,11 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                             CTRunGetGlyphs(run, CFRange(), &glyphs)
                             CTRunGetPositions(run, CFRange(), &positions)
                             let symbol = SymbolRunStyle.lookup(segment.symbols, at: range.location + CTRunGetStringRange(run).location)
+                            var firstX: CGFloat = 0
+                            var sourceColumnOffset: CGFloat?
                             if symbol == nil {
-                                // Preserve native mark/kerning positions and the advances of
-                                // the original face chain, including its missing-glyph face.
+                                // Keep native intra-run mark/kerning positions, but anchor
+                                // each run to its own cell, excluding earlier fallback advances.
                                 var indices = [CFIndex](repeating: 0, count: count)
                                 CTRunGetStringIndices(run, CFRange(), &indices)
                                 for i in positions.indices {
@@ -1503,14 +1520,22 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                                         originalPositions[indices[i]]?.removeFirst()
                                     }
                                 }
+                                firstX = CTRunGetStatus(run).contains(.rightToLeft)
+                                    ? (positions.map(\.x).min() ?? 0) : (positions.first?.x ?? 0)
+                                let startColumn = indices.compactMap {
+                                    cellColumns[originalString.rangeOfComposedCharacterSequence(at: $0).location]
+                                }.min() ?? segment.column
+                                // Glyph counts differ from cells for marks and ligatures.
+                                sourceColumnOffset = CGFloat(startColumn - segment.column
+                                    - processedGlyphs * segment.columnWidth) * width
                             } else {
                                 for i in positions.indices { positions[i].x = CGFloat(i * segment.columnWidth) * width }
                             }
                             let shaped = ShaperRun(glyphRuns: [ShaperGlyphRun(font: font, glyphs: glyphs, positions: positions)],
-                                positions: positions, glyphCount: count, firstX: symbol == nil ? (firstX ?? 0) : 0)
+                                positions: positions, glyphCount: count, firstX: firstX)
                             shapedRuns.append(ShapedRun(attributes: symbol == nil ? styledAttributes : attributes, shaperRun: shaped, symbol: symbol,
-                                sourceColumnOffset: symbol == nil ? -CGFloat(precedingGlyphs * segment.columnWidth) * width : nil))
-                            precedingGlyphs += count
+                                sourceColumnOffset: sourceColumnOffset))
+                            processedGlyphs += count
                         }
                     }
                     symbolRows[cacheKey] = shapedRuns

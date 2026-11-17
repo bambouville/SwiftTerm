@@ -460,46 +460,137 @@ final class TerminalSymbolRenderingTests: XCTestCase {
                 run.shaperRun.glyphRuns.filter { CTFontCopyPostScriptName($0.font) as String == "CourierNewPSMT" }.flatMap(\.glyphs)
             }
         }
-        let enabled = ordinaryGlyphs(shaper.build(info(view).segments, normalFont: view.font, cellWidth: view.cellDimension.width))
+        let shaped = shaper.build(info(view, forMetal: true).segments, normalFont: view.font, cellWidth: view.cellDimension.width)
+        let enabled = ordinaryGlyphs(shaped)
+        let positions = metalOrdinaryGlyphs(shaped, cellWidth: view.cellDimension.width).map { $0.position.x }.sorted()
+        let expected = [0, 1, 3, 4].map { CGFloat($0) * view.cellDimension.width }
+        XCTAssertEqual(positions.count, expected.count)
+        for (actual, cellX) in zip(positions, expected) {
+            XCTAssertEqual(actual, cellX, accuracy: 1 / view.backingScaleFactor(),
+                "RTL runs must anchor their leftmost glyph to the run's first visual cell")
+        }
         view.symbolsFont = nil
         let disabled = ordinaryGlyphs(shaper.build(info(view).segments, normalFont: view.font, cellWidth: view.cellDimension.width))
         XCTAssertEqual(enabled.count, 4)
         XCTAssertEqual(enabled, disabled)
     }
 
-    func testMetalKeepsOrdinaryMarkPositionsAndKeysRowsByCellWidth() throws {
-        let view = try view(text: "x\u{0301}\u{F09B}z")
-        let shaper = MetalTerminalRenderer.RowShaper()
-        func layout(_ row: [MetalTerminalRenderer.ShapedSegment], width: CGFloat) -> [String] {
-            var result: [String] = []
-            for segment in row {
+    func testMetalAnchorsTextAfterMissingSymbolsToItsCellsLikeCoreGraphics() throws {
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["SWIFTTERM_TEST_SYMBOL_FONT"])
+        let primary = try font(url: URL(fileURLWithPath: path).deletingLastPathComponent()
+            .appendingPathComponent("ubuntu_mono.ttf"), size: 13)
+        var character: UniChar = 0xEE04, missingGlyph = CGGlyph()
+        XCTAssertFalse(CTFontGetGlyphsForCharacters(primary, &character, &missingGlyph, 1))
+        character = 88
+        var xGlyph = CGGlyph()
+        XCTAssertTrue(CTFontGetGlyphsForCharacters(primary, &character, &xGlyph, 1))
+        for text in ["A\u{EE04}X", "A\u{EE04}XY\u{EE04} X|", "|\u{EE04}X\u{EE04} X|"] {
+            let view = try view(text: "")
+            view.font = primary
+            let columns = text.count + 1
+            let width = view.cellDimension.width
+            let tolerance = 1 / view.backingScaleFactor()
+            view.frame.size = CGSize(width: width * CGFloat(columns), height: view.cellDimension.height)
+            view.resize(cols: columns, rows: 1)
+            view.feed(text: text)
+            let row = info(view, forMetal: true)
+            XCTAssertEqual(row.segments.count, 1, "Exercise text within the same styled segment")
+            XCTAssertEqual(row.segments.flatMap { $0.symbols.values }.count, text.filter { $0 == "\u{EE04}" }.count)
+            let originalSymbol = CTLineCreateWithAttributedString(NSAttributedString(string: "\u{EE04}", attributes: [.font: primary]))
+            XCTAssertGreaterThan(abs(CGFloat(CTLineGetTypographicBounds(originalSymbol, nil, nil, nil)) - width), tolerance,
+                "The native fallback must advance differently from a terminal cell")
+            let shaped = MetalTerminalRenderer.RowShaper().build(row.segments, normalFont: primary, cellWidth: width)
+            let metalXs = metalOrdinaryGlyphs(shaped, cellWidth: width).filter {
+                $0.glyph == xGlyph && CTFontCopyPostScriptName($0.font) as String == CTFontCopyPostScriptName(primary) as String
+            }.map { $0.position.x }
+            let expected = text.enumerated().compactMap { $0.element == "X" ? CGFloat($0.offset) * width : nil }
+            XCTAssertEqual(metalXs.count, expected.count)
+
+            let buffer = view.terminal.displayBuffer
+            let prepared = view.prepareCoreGraphicsRow(row: buffer.yBase, line: buffer.lines[buffer.yBase], cols: columns)
+            var graphicsXs: [CGFloat] = []
+            for segment in prepared.segments {
                 var processed = 0
                 for run in segment.runs {
-                    let x = CGFloat(segment.segment.column + processed * segment.segment.columnWidth) * width
-                        - run.shaperRun.firstX + (run.sourceColumnOffset ?? 0)
-                    if run.symbol == nil {
-                        for glyphRun in run.shaperRun.glyphRuns {
-                            let name = CTFontCopyPostScriptName(glyphRun.font) as String
-                            if name == "LastResort" { continue }
-                            for (glyph, point) in zip(glyphRun.glyphs, glyphRun.positions) {
-                                result.append("\(name):\(glyph):\(point.x + x):\(point.y)")
-                            }
+                    let count = CTRunGetGlyphCount(run)
+                    var glyphs = [CGGlyph](repeating: 0, count: count)
+                    CTRunGetGlyphs(run, CFRange(), &glyphs)
+                    let attributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
+                    let runFont = try XCTUnwrap(attributes[.font] as? NSFont)
+                    if CTFontCopyPostScriptName(runFont) as String == CTFontCopyPostScriptName(primary) as String {
+                        for i in glyphs.indices where glyphs[i] == xGlyph {
+                            // CoreGraphics places ordinary glyphs directly on this grid.
+                            graphicsXs.append(CGFloat(segment.segment.column + (processed + i) * segment.segment.columnWidth) * width)
                         }
                     }
-                    processed += run.shaperRun.glyphCount
+                    processed += count
                 }
             }
-            return result
+            XCTAssertEqual(graphicsXs.count, expected.count)
+            for (actual, cellX) in zip(metalXs, expected) { XCTAssertEqual(actual, cellX, accuracy: tolerance, text) }
+            for (metalX, graphicsX) in zip(metalXs, graphicsXs) { XCTAssertEqual(metalX, graphicsX, accuracy: tolerance, text) }
         }
-        let enabledInfo = info(view)
+    }
+
+    func testMetalKeepsOrdinaryMarkOffsetsAndKeysRowsByCellWidth() throws {
+        let view = try view(text: "x\u{0301}\u{F09B}z")
+        view.frame.size = CGSize(width: view.cellDimension.width * 3, height: view.cellDimension.height)
+        view.resize(cols: 3, rows: 1)
+        let shaper = MetalTerminalRenderer.RowShaper()
+        let enabledInfo = info(view, forMetal: true)
         let width = view.cellDimension.width
-        let enabled = layout(shaper.build(enabledInfo.segments, normalFont: view.font, cellWidth: width), width: width)
+        let enabled = metalOrdinaryGlyphs(shaper.build(enabledInfo.segments, normalFont: view.font, cellWidth: width), cellWidth: width)
         view.symbolsFont = nil
-        let disabled = layout(shaper.build(info(view).segments, normalFont: view.font, cellWidth: width), width: width)
+        let disabled = metalOrdinaryGlyphs(shaper.build(info(view, forMetal: true).segments, normalFont: view.font, cellWidth: width), cellWidth: width)
         XCTAssertFalse(enabled.isEmpty)
-        XCTAssertEqual(enabled, disabled)
-        let wider = layout(shaper.build(enabledInfo.segments, normalFont: view.font, cellWidth: width + 3), width: width + 3)
-        XCTAssertEqual(wider, disabled, "Ordinary native positions survive a changed grid width on a cached symbol row")
+        XCTAssertEqual(enabled.count, disabled.count)
+        for (actual, original) in zip(enabled, disabled) {
+            XCTAssertEqual(actual.glyph, original.glyph)
+            XCTAssertEqual(CTFontCopyPostScriptName(actual.font) as String, CTFontCopyPostScriptName(original.font) as String)
+            XCTAssertEqual(actual.position.y, original.position.y)
+        }
+        XCTAssertEqual(Array(enabled.dropLast().map(\.position)), Array(disabled.dropLast().map(\.position)),
+            "The base and combining mark keep their native offsets")
+        XCTAssertEqual(try XCTUnwrap(enabled.last).position.x, 2 * width, accuracy: 0.001)
+        let wider = metalOrdinaryGlyphs(shaper.build(enabledInfo.segments, normalFont: view.font, cellWidth: width + 3), cellWidth: width + 3)
+        XCTAssertEqual(Array(wider.dropLast().map(\.position)), Array(enabled.dropLast().map(\.position)))
+        XCTAssertEqual(try XCTUnwrap(wider.last).position.x, 2 * (width + 3), accuracy: 0.001,
+            "A cached symbol row must anchor ordinary text using the new grid width")
+    }
+
+    func testMetalKeepsLigatureAdvancesBetweenSymbols() throws {
+        let view = try view(text: "")
+        view.font = try XCTUnwrap(NSFont(name: "Times-Roman", size: 20))
+        let width = view.cellDimension.width
+        view.frame.size = CGSize(width: width * 7, height: view.cellDimension.height)
+        view.resize(cols: 7, rows: 1)
+        view.feed(text: "A\u{EE04}ffi\u{EE04}X")
+        let source = try XCTUnwrap(info(view, forMetal: true).segments.first)
+        let text = NSMutableAttributedString(attributedString: source.attributedString)
+        text.addAttribute(.ligature, value: 1, range: NSRange(location: 0, length: text.length))
+        let segment = ViewLineSegment(column: source.column, columnWidth: source.columnWidth,
+            characterCount: source.characterCount, attributedString: text, symbols: source.symbols)
+        let originalLine = CTLineCreateWithAttributedString(segment.originalAttributedString())
+        let native = try XCTUnwrap((CTLineGetGlyphRuns(originalLine) as? [CTRun])?.first {
+            CTRunGetStringRange($0).location == 2
+        })
+        let count = CTRunGetGlyphCount(native)
+        XCTAssertLessThan(count, 3, "The fixture must actually form a ligature in ffi")
+        var positions = [CGPoint](repeating: .zero, count: count)
+        var glyphs = [CGGlyph](repeating: 0, count: count)
+        CTRunGetPositions(native, CFRange(), &positions)
+        CTRunGetGlyphs(native, CFRange(), &glyphs)
+        let shaped = MetalTerminalRenderer.RowShaper().build([segment], normalFont: view.font, cellWidth: width)
+        let ordinary = metalOrdinaryGlyphs(shaped, cellWidth: width)
+        XCTAssertEqual(ordinary.count, count + 2)
+        let firstX = try XCTUnwrap(positions.first).x
+        for (actual, pair) in zip(ordinary.dropFirst().prefix(count), zip(glyphs, positions)) {
+            XCTAssertEqual(actual.glyph, pair.0)
+            XCTAssertEqual(actual.position.x, 2 * width + pair.1.x - firstX, accuracy: 0.001)
+            XCTAssertEqual(actual.position.y, pair.1.y)
+        }
+        XCTAssertEqual(try XCTUnwrap(ordinary.last).position.x, 6 * width, accuracy: 0.001,
+            "A ligature consumes source cells even when it produces fewer glyphs")
     }
 
     func testMetalSymbolMetadataHasOneBoundAcrossAllFitsAndRows() throws {
@@ -647,6 +738,27 @@ final class TerminalSymbolRenderingTests: XCTestCase {
         _ = info(plain)
         XCTAssertGreaterThan(SymbolFontIdentity.matrixReadCount, 0)
         XCTAssertGreaterThan(SymbolRunStyle.offsetLookupCount, 0)
+    }
+
+    private func metalOrdinaryGlyphs(_ row: [MetalTerminalRenderer.ShapedSegment], cellWidth: CGFloat)
+        -> [(glyph: CGGlyph, font: CTFont, position: CGPoint)] {
+        var result: [(glyph: CGGlyph, font: CTFont, position: CGPoint)] = []
+        for segment in row {
+            var processed = 0
+            for run in segment.runs {
+                let x = CGFloat(run.startColumn(segment: segment.segment, processedGlyphs: processed)) * cellWidth
+                    - run.shaperRun.firstX + (run.sourceColumnOffset ?? 0)
+                if run.symbol == nil {
+                    for glyphRun in run.shaperRun.glyphRuns where CTFontCopyPostScriptName(glyphRun.font) as String != "LastResort" {
+                        for (glyph, point) in zip(glyphRun.glyphs, glyphRun.positions) {
+                            result.append((glyph, glyphRun.font, CGPoint(x: point.x + x, y: point.y)))
+                        }
+                    }
+                }
+                processed += run.shaperRun.glyphCount
+            }
+        }
+        return result
     }
 
     private func renderedRow(_ view: TerminalView, expectsInk: Bool = true) throws -> (ink: CGRect, pixels: [UInt8]) {
