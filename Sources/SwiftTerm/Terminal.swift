@@ -460,6 +460,7 @@ open class Terminal {
     var reverseWraparound: Bool = false
     weak var tdel: TerminalDelegate?
     private var curAttr: Attribute = CharData.defaultAttr
+    private static let maxGraphemeBytes = 128
     private var charToIndexMap: [Character:Int32] = [:]
     private var indexToCharMap: [Int32: Character] = [:]
     private var lastCharIndex: Int32 = Int32(CharData.maxRune + 1)
@@ -1256,15 +1257,16 @@ open class Terminal {
         readingBuffer.prepare(data)
 
         updateRange(borrowing: buffer, buffer.y)
+        var scalarBytes: [UInt8] = []
         while readingBuffer.hasNext() {
             var ch: Character = " "
             var chWidth: Int = 0
             let code = readingBuffer.getNext()
             
-            let n = UnicodeUtil.expectedSizeFromFirstByte(code)
+            let utf8Length = UnicodeUtil.expectedSizeFromFirstByte(code)
 
-            if n == -1 || n == 1 {
-                // n == -1 means an Invalid UTF-8 sequence, client sent us some junk, happens if we run
+            if utf8Length == -1 || utf8Length == 1 {
+                // -1 means an Invalid UTF-8 sequence, client sent us some junk, happens if we run
                 // with the wrong locale set for example if LANG=en, still we handle it here
 
                 // get charset replacement character
@@ -1292,17 +1294,19 @@ open class Terminal {
                 	buffer.insertCharacter(charData)
 		}
                 continue
-            } else if readingBuffer.bytesLeft() >= (n-1) {
-                var x : [UInt8] = [code]
-                for _ in 1..<n {
-                    x.append (readingBuffer.getNext())
+            } else if readingBuffer.bytesLeft() >= utf8Length - 1 {
+                scalarBytes.removeAll(keepingCapacity: true)
+                scalarBytes.append(code)
+                for _ in 1..<utf8Length {
+                    scalarBytes.append(readingBuffer.getNext())
                 }
 
-                var iterator = x.makeIterator()
+                var iterator = scalarBytes.makeIterator()
                 var decoder = UTF8()
                 switch decoder.decode(&iterator) {
                 case .scalarValue(let scalar):
                     ch = Character(scalar)
+                    chWidth = UnicodeUtil.columnWidth(rune: scalar)
                 default:
                     // Invalid UTF-8 sequence, fall back to interpreting the first byte
                     let rune = UnicodeScalar(code)
@@ -1312,22 +1316,6 @@ open class Terminal {
                     	buffer.insertCharacter(charData)
 		    }
                     continue
-                }
-
-                // Now the challenge is that we have a character, not a rune, and we want to compute
-                // the width of it.
-                if ch.unicodeScalars.count == 1 {
-                    chWidth = UnicodeUtil.columnWidth(rune: ch.unicodeScalars.first!)
-                } else {
-                    chWidth = 0
-                    for scalar in ch.unicodeScalars {
-                        let width = UnicodeUtil.columnWidth(rune: scalar)
-                        if width < 0 {
-                            chWidth = -1
-                            break
-                        }
-                        chWidth = max (chWidth, width)
-                    }
                 }
             } else {
                 readingBuffer.putback (code)
@@ -1381,18 +1369,19 @@ open class Terminal {
                         let lastx = last.x >= cols ? cols-1 : last.x
                         var cd = existingLine [lastx]
 
-                        // Attempt the combination
-                        let newStr = String ([getCharacter (for: cd), ch])
-
-                        // If the resulting string is 1 grapheme cluster, then it combined properly
-                        if newStr.count == 1 {
-                            if let newCh = newStr.first {
+                        let previous = getCharacter(for: cd)
+                        var candidate = String(previous)
+                        // Each distinct prefix is interned. Check the byte budget before appending.
+                        if candidate.utf8.count + utf8Length <= Self.maxGraphemeBytes {
+                            candidate.append(ch)
+                            if candidate.count == 1 {
+                                let newCh = Character(candidate)
                                 let oldSize = cd.width
                                 let isVs16 = firstScalar.value == 0xFE0F
                                 let isVs15 = firstScalar.value == 0xFE0E
                                 let needsEmojiVariationCheck = isVs16 || isVs15
                                 if needsEmojiVariationCheck {
-                                    let baseScalar = getCharacter(for: cd).unicodeScalars.last
+                                    let baseScalar = previous.unicodeScalars.last
                                     if baseScalar == nil || !UnicodeUtil.isEmojiVs16Base(rune: baseScalar!) {
                                         continue
                                     }

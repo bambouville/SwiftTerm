@@ -4,6 +4,32 @@ import Testing
 final class TerminalCoreTests {
     private let esc = "\u{1b}"
 
+    @Test func testCombiningMarksStopAtCellByteLimit() throws {
+        let (terminal, _) = TerminalTestHarness.makeTerminal()
+        let mark = "\u{0301}"
+        let prefix = "λ" + String(repeating: mark, count: 63) // 128 UTF-8 bytes
+        terminal.feed(text: prefix)
+        let full = try #require(terminal.getCharData(col: 0, row: 0))
+        #expect(terminal.getCharacter(for: full) == Character(prefix))
+
+        terminal.feed(text: String(repeating: mark, count: 96) + "q\u{0308}")
+        #expect(terminal.getCharData(col: 0, row: 0)?.code == full.code)
+        let next = try #require(terminal.getCharData(col: 1, row: 0))
+        #expect(terminal.getCharacter(for: next) == "q\u{0308}")
+        // The next new grapheme gets the next ID if the discarded marks never reached the interner.
+        #expect(next.code == full.code + 1)
+        #expect(terminal.buffer.x == 2)
+    }
+
+    @Test func testWideCharacterAfterFullZWJCluster() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal()
+        let prefix = "👩" + String(repeating: "\u{0301}", count: 60) + "\u{200D}" // 127 bytes
+        terminal.feed(text: prefix + "👦!")
+        #expect(terminal.getCharacter(col: 0, row: 0) == Character(prefix))
+        #expect(terminal.getCharacter(col: 2, row: 0) == "👦")
+        #expect(terminal.getCharacter(col: 4, row: 0) == "!")
+    }
+
     @Test func testWraparoundEnabled() {
         let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 5, rows: 2)
         terminal.feed(text: "helloX")
