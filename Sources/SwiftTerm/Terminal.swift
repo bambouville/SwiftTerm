@@ -464,6 +464,8 @@ open class Terminal {
     private var charToIndexMap: [Character:Int32] = [:]
     private var indexToCharMap: [Int32: Character] = [:]
     private var lastCharIndex: Int32 = Int32(CharData.maxRune + 1)
+    // Assigned character codes keep their mappings for the lifetime of this terminal.
+    var firstUnassignedCharacterCode: Int32 { lastCharIndex }
     var gLevel: UInt8 = 0
     var cursorBlink: Bool = false
     

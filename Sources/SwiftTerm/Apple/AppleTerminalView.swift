@@ -117,6 +117,7 @@ struct ViewLineInfo {
 struct PreparedCoreGraphicsRow {
     let deviceScale: CGFloat
     let cells: [CharData]
+    let firstUnassignedCharacterCode: Int32
     let columns: Int
     let customBlocks: Bool
     let linkMode: LinkHighlightMode
@@ -1399,7 +1400,7 @@ extension TerminalView {
                 let old = cached.cells[column], current = line[column]
                 if old.code != current.code || old.width != current.width
                     || old.attribute != current.attribute || old.payload.code != current.payload.code
-                    || current.code >= CharData.maxRune {
+                    || current.code >= cached.firstUnassignedCharacterCode {
                     matches = false
                     break
                 }
@@ -1407,6 +1408,9 @@ extension TerminalView {
             if matches { return cached }
         }
 #endif
+        // An unassigned code can be supplied through the raw cell API. It may
+        // resolve differently once the terminal assigns it to a character.
+        let firstUnassignedCharacterCode = terminal.firstUnassignedCharacterCode
         let info = buildAttributedString(row: row, line: line, cols: cols)
         let segments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun], symbols: [SymbolRunStyle?]?)] =
             info.segments.compactMap { segment in
@@ -1423,7 +1427,8 @@ extension TerminalView {
 #else
         let cells: [CharData] = []
 #endif
-        let result = PreparedCoreGraphicsRow(deviceScale: deviceScale, cells: cells, columns: cols,
+        let result = PreparedCoreGraphicsRow(deviceScale: deviceScale, cells: cells,
+            firstUnassignedCharacterCode: firstUnassignedCharacterCode, columns: cols,
             customBlocks: customBlockGlyphs, linkMode: linkHighlightMode, info: info, segments: segments)
 #if os(iOS) || os(visionOS)
         if cacheable && info.kittyPlaceholders.isEmpty {
